@@ -117,15 +117,8 @@ The tests mock package installation, service queries, and privileged directory c
 ## License
 
 This project is released under the MIT License. See `LICENSE`.
+```
 
-## Related
-
-- Old FreeNAS script: `script.freenas/github-down.sh` (deprecated — required pre-built CSV, hardcoded NAS path)
-- This script replaces the manual CSV-based approach with automatic directory crawling
-- Inspired by: `wg-manager.sh` pattern for self-install/update/uninstall
-
-## Reporting Issues
-
-Found a bug or have a feature request? Open an issue on the GitHub repository:
+- Found a bug or have a feature request? Open an issue on the GitHub repository:
 
 https://github.com/peternickol/github-backup
