@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# backup_github_repos.sh
+# github-backup
 #
 # Crawls a directory tree looking for GitHub repositories and then git pulls them
 # periodically every night. Designed to be run as a periodic cron job or systemd
@@ -9,10 +9,10 @@
 # License: MIT (see LICENSE file)
 #
 # Usage:
-#   backup_github_repos.sh [--base-dir DIR] [--dry-run] [--verbose] [--debug]
-#   backup_github_repos.sh --install              # Install to /usr/local/bin
-#   backup_github_repos.sh --update              # Download latest and reinstall
-#   backup_github_repos.sh --uninstall           # Remove installed script
+#   github-backup [--base-dir DIR] [--dry-run] [--verbose] [--debug]
+#   github-backup --install              # Install to /usr/local/bin
+#   github-backup --update              # Download latest and reinstall
+#   github-backup --uninstall           # Remove installed script
 #
 # Environment variables:
 #   GITHUB_BACKUP_BASE_DIR  Base directory to search for git repos (default: /root)
@@ -90,7 +90,7 @@ self_path() {
 }
 
 # ── Install configuration ──────────────────────────────────────────────────────
-INSTALL_PATH="/usr/local/bin/backup_github_repos"
+INSTALL_PATH="/usr/local/bin/github-backup"
 
 # ── Management commands ───────────────────────────────────────────────────────
 
@@ -119,14 +119,14 @@ cmd_install() {
     fi
 
     if [[ -n "$comp_dir" ]]; then
-      comp_file="$comp_dir/backup_github_repos"
+      comp_file="$comp_dir/github-backup"
       if [[ -e "$comp_file" && "$FORCE" -ne 1 ]]; then
         die "Completion already exists at $comp_file (use --force to overwrite)."
       fi
       log "Installing bash completion → $comp_file"
       # Simple completion: just list the main options
-      echo "# backup_github_repos.sh bash completion" > "$comp_file"
-      echo "_complete_backup_github_repos() {" >> "$comp_file"
+      echo "# github-backup bash completion" > "$comp_file"
+      echo "_complete_github_backup() {" >> "$comp_file"
       echo "    local cur prev opts" >> "$comp_file"
       echo "    COMPREPLY=()" >> "$comp_file"
       echo "    cur=\"${COMP_WORDS[COMP_CWORD]}\"" >> "$comp_file"
@@ -134,25 +134,25 @@ cmd_install() {
       echo "    opts=\"--base-dir --dry-run --verbose --debug --skip --skip-list --help\"" >> "$comp_file"
       echo "    COMPREPLY=( \$(compgen -W \"\$opts\" -- \"\$cur\") )" >> "$comp_file"
       echo "}" >> "$comp_file"
-      echo "complete -F _complete_backup_github_repos backup_github_repos" >> "$comp_file"
+      echo "complete -F _complete_github_backup github-backup" >> "$comp_file"
       ok "Bash completion installed → $comp_file"
     fi
   fi
 
-  log "Installation complete. Try: backup_github_repos.sh --help"
+  log "Installation complete. Try: github-backup --help"
 }
 
 cmd_update() {
   local tmp
-  tmp="$(mktemp "${TMPDIR:-/tmp}/backup-github-update.XXXXXX")"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/github-backup-update.XXXXXX")"
   trap 'rm -f "$tmp"' RETURN
 
-  log "Downloading latest backup_github_repos from GitHub"
+  log "Downloading latest github-backup from GitHub"
   # Download using curl or wget
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "https://raw.githubusercontent.com/peternickol/github-backup/main/backup_github_repos.sh" -o "$tmp" || die "Failed to download update"
+    curl -fsSL "https://raw.githubusercontent.com/peternickol/github-backup/main/github-backup.sh" -o "$tmp" || die "Failed to download update"
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$tmp" "https://raw.githubusercontent.com/peternickol/github-backup/main/backup_github_repos.sh" || die "Failed to download update"
+    wget -qO "$tmp" "https://raw.githubusercontent.com/peternickol/github-backup/main/github-backup.sh" || die "Failed to download update"
   else
     die "Neither curl nor wget is installed. Install one of them to use update."
   fi
@@ -164,7 +164,7 @@ cmd_update() {
   install -m 0755 -o root -g root "$tmp" "$INSTALL_PATH"
   ok "Updated binary: $INSTALL_PATH"
 
-  log "Update complete. Try: backup_github_repos.sh --help"
+  log "Update complete. Try: github-backup --help"
 }
 
 cmd_uninstall() {
@@ -180,12 +180,12 @@ cmd_uninstall() {
   ok "Removed: $dest"
 
   # Also remove completion if it exists
-  if [[ -e /usr/share/bash-completion/completions/backup_github_repos ]]; then
-    rm -f /usr/share/bash-completion/completions/backup_github_repos
+  if [[ -e /usr/share/bash-completion/completions/github-backup ]]; then
+    rm -f /usr/share/bash-completion/completions/github-backup
     ok "Removed bash completion"
   fi
-  if [[ -e /etc/bash_completion.d/backup_github_repos ]]; then
-    rm -f /etc/bash_completion.d/backup_github_repos
+  if [[ -e /etc/bash_completion.d/github-backup ]]; then
+    rm -f /etc/bash_completion.d/github-backup
     ok "Removed bash completion"
   fi
 }
@@ -206,12 +206,12 @@ while [[ $# -gt 0 ]]; do
     --update) cmd_update; exit 0;;
     --uninstall) cmd_uninstall; exit 0;;
     --help|-h)
-      echo "Usage: $0 [--base-dir DIR] [--dry-run] [--verbose] [--debug] [--skip REPO] [--skip-list LIST] [--install] [--update] [--uninstall]"
+      echo "Usage: github-backup [--base-dir DIR] [--dry-run] [--verbose] [--debug] [--skip REPO] [--skip-list LIST] [--install] [--update] [--uninstall]"
       echo ""
       echo "Management commands:"
-      echo "  --install      Install script to $INSTALL_PATH"
+      echo "  --install      Install script to /usr/local/bin/github-backup"
       echo "  --update       Download latest and reinstall"
-      echo "  --uninstall    Remove installed script from $INSTALL_PATH"
+      echo "  --uninstall    Remove installed script from /usr/local/bin/github-backup"
       echo ""
       echo "Full options:"
       echo "  --base-dir DIR       Base directory to search (default: /root)"
