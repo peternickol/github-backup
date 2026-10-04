@@ -1,0 +1,13 @@
+[Unit]
+Description=GitHub Repositories Backup
+Documentation=man:backup_github_repos.sh(8)
+
+[Service]
+Type=oneshot
+ExecStart=/root/temp/github-backup/backup_github_repos.sh \
+  --base-dir /root \
+  --verbose \
+  --log-file /var/log/github-backup.log
+
+[Install]
+WantedBy=timers.target
