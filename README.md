@@ -1,15 +1,17 @@
 # github-backup
 
-`github-backup` is a convenience wrapper that crawls directory trees for Git repositories with GitHub remotes and performs periodic `git pull` to keep local mirrors in sync. It is designed to be run as a periodic cron job or systemd timer.
+`github-backup` is a convenience wrapper that crawls directory trees for GitHub repositories and then git pulls them periodically every night. It is designed to be run as a periodic cron job or systemd timer to keep local mirrors of GitHub repositories in sync.
+
+Can operate in two modes:
+1. Local directory crawl - finds `.git` directories under a base directory
+2. GitHub profile download - downloads all repos from a GitHub user profile
 
 The installed launcher path is:
-
 - `/usr/local/bin/github-backup`
 
 ## Overview
 
 `github-backup` is designed as one small command with:
-
 - Automatic repo discovery via `.git` directory crawl
 - Support for both SSH (`git@github.com:user/repo.git`) and HTTPS (`https://github.com/user/repo.git`) remotes
 - Smart skip list for excluding repos
@@ -18,11 +20,12 @@ The installed launcher path is:
 - Email notification on completion
 - systemd timer support for daily automated runs
 - Self-install, update, and uninstall commands (modeled after `wg-manager.sh`)
+- **Profile download and list commands**
 
 ## Quick Install
 
 ```bash
-# Install the script to /usr/local/bin/github-backup
+# Install the script
 github-backup --install
 
 # Or manually:
@@ -39,7 +42,7 @@ sudo systemctl enable --now github-backup.timer
 ## Quick Update
 
 ```bash
-sudo github-backup update
+github-backup update
 ```
 
 Downloads the latest version from GitHub and reinstalls it.
@@ -48,7 +51,7 @@ Downloads the latest version from GitHub and reinstalls it.
 
 ```text
 github-backup [--base-dir DIR] [--dry-run] [--verbose] [--debug]
-               [--skip REPO] [--skip-list LIST] [--install] [--update] [--uninstall]
+               [--profile USER] [--list-repos USER] [--skip REPO] [--skip-list LIST] [--install] [--update] [--uninstall]
                [--help/-h]
 ```
 
@@ -62,6 +65,8 @@ github-backup [--base-dir DIR] [--dry-run] [--verbose] [--debug]
 | `--debug` | Print debug information (repo paths, remote URLs, skip decisions) |
 | `--skip REPO` | Skip a specific repo name/dir |
 | `--skip-list LIST` | Comma-separated list of repos to skip (e.g., `admin-themes,bobs-septics`) |
+| `--profile USER` | Download all repos from GitHub user USER |
+| `--list-repos USER` | List repos from GitHub user USER |
 | `--install` | Install script to `/usr/local/bin/github-backup` |
 | `--update` | Download latest and reinstall |
 | `--uninstall` | Remove installed script from `/usr/local/bin/github-backup` |
@@ -75,6 +80,13 @@ github-backup [--base-dir DIR] [--dry-run] [--verbose] [--debug]
 | `--update` | Download latest and reinstall |
 | `--uninstall` | Remove installed script from `/usr/local/bin/github-backup` |
 
+### Profile Commands
+
+| Command | Description |
+|---|---|
+| `--profile USER` | Download all repos from GitHub user USER |
+| `--list-repos USER` | List repos from GitHub user USER |
+
 ### Full Options (also shown with `--help`)
 
 | Option | Description |
@@ -85,6 +97,8 @@ github-backup [--base-dir DIR] [--dry-run] [--verbose] [--debug]
 | `--debug` | Print debug information (repo paths, git urls) |
 | `--skip REPO` | Skip a specific repo name/dir |
 | `--skip-list LIST` | Comma-separated list of repos to skip |
+| `--profile USER` | Download all repos from GitHub user USER |
+| `--list-repos USER` | List repos from GitHub user USER |
 | `--help` / `-h` | Show this help message |
 
 ## How It Works
@@ -95,6 +109,7 @@ github-backup [--base-dir DIR] [--dry-run] [--verbose] [--debug]
 4. **Pull** — Changes to the repo directory and runs `git pull`
 5. **Logging** — Writes timestamped entries to the log file
 6. **Notification** — If `GITHUB_BACKUP_EMAIL` is set and repos were pulled, sends a completion email
+7. **Profile mode** — If `--profile USER` is given, downloads all repos from that GitHub user
 
 ## Requirements
 
@@ -117,8 +132,15 @@ The tests mock package installation, service queries, and privileged directory c
 ## License
 
 This project is released under the MIT License. See `LICENSE`.
-```
 
-- Found a bug or have a feature request? Open an issue on the GitHub repository:
+## Related
+
+- Old FreeNAS script: `script.freenas/github-down.sh` (deprecated — required pre-built CSV, hardcoded NAS path)
+- This script replaces the manual CSV-based approach with automatic directory crawling
+- Inspired by: `wg-manager.sh` pattern for self-install/update/uninstall
+
+## Reporting Issues
+
+Found a bug or have a feature request? Open an issue on the GitHub repository:
 
 https://github.com/peternickol/github-backup
