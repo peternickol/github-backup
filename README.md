@@ -111,6 +111,55 @@ github-backup [--base-dir DIR] [--dry-run] [--verbose] [--debug]
 6. **Notification** — If `GITHUB_BACKUP_EMAIL` is set and repos were pulled, sends a completion email
 7. **Profile mode** — If `--profile USER` is given, downloads all repos from that GitHub user
 
+## Profile Examples
+
+### Download all repos from a GitHub user
+
+```bash
+# Download all repos from the octocat user
+github-backup --profile octocat
+
+# Download with verbose output to see each repo being processed
+github-backup --profile octocat --verbose
+
+# Download with debug output to see repo paths and remote URLs
+github-backup --profile octocat --debug
+```
+
+### List repos from a GitHub user
+
+```bash
+# List all repos from the octocat user
+github-backup --list-repos octocat
+
+# List with verbose output
+github-backup --list-repos octocat --verbose
+```
+
+### Combine profile download with skip list
+
+```bash
+# Download all repos except the ones you don't want
+github-backup --profile octocat --skip-list octocat/Hello-World,octocat/Goodies
+
+# Download all repos except private ones (if you have a token)
+GITHUB_BACKUP_TOKEN=ghp_xxxxx github-backup --profile octocat
+```
+
+### Quick Start Example
+
+```bash
+# Full setup:
+# 1. Install the script
+github-backup --install
+
+# 2. Download all repos from a user
+github-backup --profile octocat
+
+# 3. Set up daily automatic updates
+sudo systemctl enable --now github-backup.timer
+```
+
 ## Requirements
 
 - Bash (tested with Bash 5.0+)
