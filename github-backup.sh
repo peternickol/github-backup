@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-VERSION="1.2.1"
+VERSION="1.2.2"
 PROGRAM="github-backup"
 INSTALL_PATH="${GITHUB_BACKUP_INSTALL_PATH:-/usr/local/bin/github-backup}"
 UPDATE_URL="${GITHUB_BACKUP_UPDATE_URL:-https://raw.githubusercontent.com/peternickol/github-backup/master/github-backup.sh}"
@@ -119,7 +119,7 @@ require_root() {
     local path
     for path in "$@"; do
         case "$path" in
-            /etc|/etc/*|/usr/local|/usr/local/*|/var/log|/var/log/*|/run|/run/*)
+            /etc|/etc/*|/usr/local|/usr/local/*|/usr/share|/usr/share/*|/var/log|/var/log/*|/run|/run/*)
                 die_code 2 "must be run as root. Try: sudo $PROGRAM ${COMMAND:-}"
                 ;;
         esac
@@ -479,7 +479,7 @@ repo_root() {
 physical_dir() {
     local target="$1"
     local resolved=""
-    resolved="$(cd "$target" 2>/dev/null && pwd -P)" || resolved=""
+    resolved="$(CDPATH='' cd -P -- "$target" 2>/dev/null && pwd -P)" || resolved=""
     if [[ -n "$resolved" ]]; then
         printf '%s\n' "$resolved"
     else
@@ -510,10 +510,16 @@ git_with_auth() {
     if [[ -n "$TOKEN" ]]; then
         local auth_header
         printf -v auth_header 'Authorization: Bearer %s' "$TOKEN"
+        # SSH remotes ignore an HTTP header. Rewrite GitHub SSH URLs to HTTPS
+        # for this command only; the remote saved in the repository stays put.
         GIT_TERMINAL_PROMPT=0 \
-            GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_COUNT=3 \
             GIT_CONFIG_KEY_0=http.extraHeader \
             GIT_CONFIG_VALUE_0="$auth_header" \
+            GIT_CONFIG_KEY_1='url.https://github.com/.insteadOf' \
+            GIT_CONFIG_VALUE_1='git@github.com:' \
+            GIT_CONFIG_KEY_2='url.https://github.com/.insteadOf' \
+            GIT_CONFIG_VALUE_2='ssh://git@github.com/' \
             git "$@"
     else
         GIT_TERMINAL_PROMPT=0 git "$@"
@@ -531,6 +537,7 @@ record_skip() {
 record_failure() {
     local repo="$1"
     local reason="$2"
+    reason="${reason%%$'\n'*}"
     failed_count=$((failed_count + 1))
     error "$(basename "$repo"): $reason"
     log_message ERROR "$repo: $reason"
@@ -695,7 +702,7 @@ sync_repo() {
             log_message INFO "$repo would fast-forward $(commit_phrase "$behind") to $upstream"
             return 0
         fi
-        if output="$(git -C "$repo" merge --ff-only "$upstream" 2>&1)"; then
+        if output="$(git -C "$repo" merge --ff-only --no-edit "$upstream_oid" 2>&1)"; then
             updated_count=$((updated_count + 1))
             ok "$name fast-forwarded $(commit_phrase "$behind") to $upstream"
             log_message OK "$repo fast-forwarded to $upstream"
@@ -728,7 +735,7 @@ sync_tree() {
             continue
         fi
         sync_repo "$toplevel"
-    done < <(find "$BASE_DIR" \( -type d -o -type f \) -name .git -print0 2>/dev/null)
+    done < <(find "$BASE_DIR" -name .git \( -type d -o -type f \) -prune -print0 2>/dev/null)
 }
 
 github_api() {
@@ -747,7 +754,7 @@ github_api() {
 
 validate_owner() {
     local owner="$1"
-    [[ "$owner" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || die "Invalid GitHub profile name: $owner"
+    [[ "$owner" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]]
 }
 
 authenticated_login() {
@@ -782,8 +789,11 @@ print("org" if data.get("type") == "Organization" else "user")
 
 github_repo_rows() {
     local owner="$1"
-    local auth_login="" kind="" endpoint page response count
-    validate_owner "$owner"
+    local auth_login="" kind="" endpoint page response count first_name="" page_marker=""
+    if ! validate_owner "$owner"; then
+        error "Invalid GitHub profile name: $owner"
+        return 2
+    fi
     auth_login="$(authenticated_login)"
     kind="$(github_owner_kind "$owner")"
     page=1
@@ -808,10 +818,27 @@ except Exception:
     raise SystemExit(0)
 print(len(data) if isinstance(data, list) else -1)' <<< "$response" 2>/dev/null || printf '%s' '-1')"
         if [[ "$count" -lt 0 ]]; then
-            die "Could not parse the GitHub repository list for '$owner'."
+            error "Could not parse the GitHub repository list for '$owner'."
+            return 2
         fi
         if [[ "$count" -eq 0 ]]; then
             break
+        fi
+
+        first_name="$(OWNER_FILTER="$owner" python3 -c '
+import json, os, sys
+owner = os.environ["OWNER_FILTER"].casefold()
+for repo in json.load(sys.stdin):
+    if str(repo.get("owner", {}).get("login", "")).casefold() != owner:
+        continue
+    print(repo.get("name", ""))
+    break
+' <<< "$response" 2>/dev/null || true)"
+        if [[ -n "$first_name" && "$page" -gt 1 && "$first_name" == "$page_marker" ]]; then
+            break
+        fi
+        if [[ "$page" -eq 1 && -n "$first_name" ]]; then
+            page_marker="$first_name"
         fi
 
         OWNER_FILTER="$owner" python3 -c '
@@ -826,17 +853,41 @@ for repo in json.load(sys.stdin):
         "private" if repo.get("private") else "public",
     ]
     print("\t".join(str(field) for field in fields))
-' <<< "$response" || die "Could not parse the GitHub repository list for '$owner'."
+' <<< "$response" || {
+            error "Could not parse the GitHub repository list for '$owner'."
+            return 2
+        }
         page=$((page + 1))
     done
+}
+
+load_profile_rows() {
+    local owner="$1"
+    local rows_file="" status=0 old_umask=""
+    PROFILE_ROWS=""
+    old_umask="$(umask)"
+    umask 077
+    rows_file="$(mktemp)" || {
+        umask "$old_umask"
+        die "Could not create a temporary file"
+    }
+    umask "$old_umask"
+    github_repo_rows "$owner" >"$rows_file" || status=$?
+    PROFILE_ROWS="$(cat "$rows_file")"
+    rm -f "$rows_file"
+    if [[ "$status" -eq 2 ]]; then
+        exit 1
+    fi
+    return "$status"
 }
 
 list_profile_repositories() {
     local owner="$1"
     local rows=""
-    if ! rows="$(github_repo_rows "$owner")"; then
+    if ! load_profile_rows "$owner"; then
         die "GitHub API request failed for profile '$owner'."
     fi
+    rows="$PROFILE_ROWS"
     if [[ -z "$rows" ]]; then
         warn "No repositories visible for GitHub profile '$owner'."
         return 0
@@ -865,7 +916,7 @@ clone_repo() {
         elif git -C "$destination" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             local destination_root="" destination_physical=""
             destination_root="$(repo_root "$destination" || true)"
-            destination_physical="$(cd "$destination" 2>/dev/null && pwd -P)" || destination_physical=""
+            destination_physical="$(CDPATH='' cd -P -- "$destination" 2>/dev/null && pwd -P)" || destination_physical=""
             if [[ -z "$destination_root" || "$destination_root" != "$destination_physical" ]]; then
                 record_skip "$destination" "destination is inside another repository, not a repository root"
             else
@@ -901,9 +952,10 @@ clone_repo() {
 sync_profile() {
     local owner="$1"
     local rows=""
-    if ! rows="$(github_repo_rows "$owner")"; then
+    if ! load_profile_rows "$owner"; then
         die "GitHub API request failed for profile '$owner'."
     fi
+    rows="$PROFILE_ROWS"
     if [[ -z "$rows" ]]; then
         warn "No repositories visible for GitHub profile '$owner'."
         return 0
@@ -921,8 +973,13 @@ sync_profile() {
 }
 
 send_notification() {
+    [[ "$DRY_RUN" -eq 0 ]] || return 0
     [[ -n "$EMAIL_TO" ]] || return 0
     [[ "$failed_count" -gt 0 ]] || return 0
+    if [[ "$EMAIL_TO" == *$'\n'* || "$EMAIL_TO" == *$'\r'* ]]; then
+        warn "Ignoring the email address because it is not a single line."
+        return 0
+    fi
     local subject="github-backup: $failed_count failed, $skipped_count skipped"
     local body="Updated: $updated_count
 Cloned: $cloned_count
@@ -1132,7 +1189,7 @@ run_systemctl() {
         return
     fi
     if [[ "$QUIET" -eq 1 ]]; then
-        env PATH="/usr/sbin:/usr/bin:/sbin:/bin" systemctl "$@" >/dev/null
+        env PATH="/usr/sbin:/usr/bin:/sbin:/bin" systemctl "$@" >/dev/null 2>&1
     else
         env PATH="/usr/sbin:/usr/bin:/sbin:/bin" systemctl "$@"
     fi
@@ -1158,7 +1215,7 @@ write_systemd_units() {
 
     if ! printf '%s\n' \
         '[Unit]' \
-        'Description=Mirror GitHub repositories locally' \
+        'Description=Fast-forward local GitHub checkouts' \
         'After=network-online.target' \
         'Wants=network-online.target' \
         '' \
@@ -1385,6 +1442,7 @@ cmd_update() {
     install_binary "$temporary" "$INSTALL_PATH" || { rm -f "$temporary"; die "Update install failed"; }
     rm -f "$temporary"
     ok "Updated binary: $INSTALL_PATH"
+    trap - RETURN
     if [[ "$NO_COMPLETION" -eq 0 ]]; then
         FORCE=1
         install_completion

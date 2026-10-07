@@ -1,5 +1,5 @@
 [Unit]
-Description=Mirror GitHub repositories locally
+Description=Fast-forward local GitHub checkouts
 After=network-online.target
 Wants=network-online.target
 

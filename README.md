@@ -56,7 +56,9 @@ Ignored files and nested Git directories stay. Preview it with `--dry-run`.
 
 Profile mode never follows a symlink and never treats a nested directory as a
 clone destination. New clones use HTTPS. A token is sent in an HTTP header and
-is not written into `origin` URLs. `GIT_TERMINAL_PROMPT=0` stops Git from
+is not written into `origin` URLs. For that one Git command, a token also
+reads `git@github.com:` and `ssh://git@github.com/` as HTTPS. The remote saved
+in the checkout stays as it was. `GIT_TERMINAL_PROMPT=0` stops Git from
 waiting for a password.
 
 Repositories deleted or renamed on GitHub are left on disk. Wikis, gists,
@@ -88,7 +90,7 @@ issues, releases, and Git LFS objects are not downloaded.
 | `is-active` | Report whether the timer is active. |
 | `status` | Show the timer, then the service. |
 | `journal` | Follow the service journal. |
-| `--version`, `-V` | Print `github-backup 1.2.1`. |
+| `--version`, `-V` | Print `github-backup 1.2.2`. |
 | `--help`, `-h` | Print every command, every option, and the examples. |
 
 ### `sync`
@@ -401,7 +403,7 @@ github-backup --help
 github-backup -h
 ```
 
-`--version` prints `github-backup 1.2.1`. Running `github-backup` with no
+`--version` prints `github-backup 1.2.2`. Running `github-backup` with no
 arguments prints the same text as `--help` and exits `0`. An unknown argument,
 or an option with no value, prints the error and then the same help, and
 exits `1`.
@@ -500,7 +502,8 @@ about 5,000 per hour.
 
 Failure mail uses `mail` when it is installed, otherwise `sendmail`. A fully
 successful run does not send mail. Skips are logged and do not send mail by
-themselves. A mail failure is a warning. It does not change the exit status.
+themselves. A dry run does not send mail. A mail failure is a warning. It
+does not change the exit status.
 
 The subject is `github-backup: N failed, N skipped`. The body is:
 
@@ -581,7 +584,7 @@ of setup, which is `/usr/local/bin/github-backup` unless
 
 ```ini
 [Unit]
-Description=Mirror GitHub repositories locally
+Description=Fast-forward local GitHub checkouts
 After=network-online.target
 Wants=network-online.target
 

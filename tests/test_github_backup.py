@@ -304,7 +304,7 @@ class GitHubBackupSafetyTests(unittest.TestCase):
             "#!/bin/sh\n"
             "for arg in \"$@\"; do\n"
             "  if [ \"$arg\" = fetch ]; then\n"
-            "    printf '%s\\n%s\\n' \"${GIT_CONFIG_KEY_0-}\" \"${GIT_CONFIG_VALUE_0-}\" > \"$FETCH_LOG\"\n"
+            "    env | grep '^GIT_CONFIG_' | sort > \"$FETCH_LOG\"\n"
             "  fi\n"
             "done\n"
             f'exec "{real_git}" "$@"\n'
@@ -320,8 +320,11 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         )
 
         logged = fetch_log.read_text()
-        self.assertIn("http.extraHeader", logged)
-        self.assertIn("Authorization: Bearer test-token", logged)
+        self.assertIn("GIT_CONFIG_KEY_0=http.extraHeader", logged)
+        self.assertIn("GIT_CONFIG_VALUE_0=Authorization: Bearer test-token", logged)
+        self.assertIn("GIT_CONFIG_KEY_1=url.https://github.com/.insteadOf", logged)
+        self.assertIn("GIT_CONFIG_VALUE_1=git@github.com:", logged)
+        self.assertIn("GIT_CONFIG_VALUE_2=ssh://git@github.com/", logged)
         self.assertEqual(self.fixture.remote_head(), self.fixture.client_head())
 
     def test_missing_base_directory_fails(self):
@@ -341,6 +344,7 @@ class GitHubBackupSafetyTests(unittest.TestCase):
 
 class FakeGitHubHandler(http.server.BaseHTTPRequestHandler):
     requests = []
+    repeat_full_page = False
 
     def do_GET(self):
         type(self).requests.append((self.path, self.headers.get("Authorization")))
@@ -369,15 +373,27 @@ class FakeGitHubHandler(http.server.BaseHTTPRequestHandler):
             self._json({"login": "alice", "type": "User"})
             return
         if self.path.startswith("/users/alice/repos"):
-            payload = [] if "page=2" in self.path else [
-                {
-                    "name": "one",
-                    "clone_url": "https://github.com/alice/one.git",
-                    "ssh_url": "git@github.com:alice/one.git",
-                    "private": False,
-                    "owner": {"login": "alice"},
-                }
-            ]
+            if type(self).repeat_full_page:
+                payload = [
+                    {
+                        "name": f"repo-{index:03d}",
+                        "clone_url": f"https://github.com/alice/repo-{index:03d}.git",
+                        "ssh_url": f"git@github.com:alice/repo-{index:03d}.git",
+                        "private": False,
+                        "owner": {"login": "alice"},
+                    }
+                    for index in range(100)
+                ]
+            else:
+                payload = [] if "page=2" in self.path else [
+                    {
+                        "name": "one",
+                        "clone_url": "https://github.com/alice/one.git",
+                        "ssh_url": "git@github.com:alice/one.git",
+                        "private": False,
+                        "owner": {"login": "alice"},
+                    }
+                ]
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -436,6 +452,38 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_invalid_profile_name_fails_once(self):
+        result = run(SCRIPT, "list-repos", "bad_name", "--log-file", self.log, check=False)
+        self.assertEqual(1, result.returncode)
+        self.assertEqual(result.stdout.count("Invalid GitHub profile name"), 1)
+        self.assertNotIn("GitHub API request failed", result.stdout)
+
+    def test_repeated_repository_page_stops(self):
+        FakeGitHubHandler.repeat_full_page = True
+        try:
+            with fake_github_server() as api_url:
+                env = os.environ.copy()
+                env.pop("GITHUB_BACKUP_TOKEN", None)
+                env.pop("GH_TOKEN", None)
+                env["GITHUB_BACKUP_API_URL"] = api_url
+                result = subprocess.run(
+                    [str(SCRIPT), "list-repos", "alice", "--log-file", str(self.log)],
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    timeout=10,
+                    check=False,
+                )
+        finally:
+            FakeGitHubHandler.repeat_full_page = False
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertEqual(100, len(result.stdout.splitlines()))
+        paths = [path for path, _header in FakeGitHubHandler.requests]
+        self.assertTrue(any("page=1" in path for path in paths))
+        self.assertTrue(any("page=2" in path for path in paths))
+        self.assertFalse(any("page=3" in path for path in paths))
 
     def test_list_repos_uses_profile_api(self):
         with fake_github_server() as api_url:
