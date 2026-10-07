@@ -1,13 +1,11 @@
 [Unit]
-Description=GitHub Repositories Backup
-Documentation=man:backup_github_repos.sh(8)
+Description=Mirror GitHub repositories locally
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/root/temp/github-backup/backup_github_repos.sh \
-  --base-dir /root \
-  --verbose \
-  --log-file /var/log/github-backup.log
-
-[Install]
-WantedBy=timers.target
+EnvironmentFile=-/etc/default/github-backup
+ExecStart=/usr/local/bin/github-backup sync
+NoNewPrivileges=true
+PrivateTmp=true

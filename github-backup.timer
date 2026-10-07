@@ -1,9 +1,11 @@
 [Unit]
-Description=Daily GitHub Repositories Backup
+Description=Nightly GitHub repository backup
 
 [Timer]
-OnCalendar=daily
+Unit=github-backup.service
+OnCalendar=*-*-* 02:00:00
 Persistent=true
+RandomizedDelaySec=30m
 
 [Install]
 WantedBy=timers.target

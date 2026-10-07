@@ -1,434 +1,1405 @@
 #!/usr/bin/env bash
-#
-# github-backup
-#
-# Crawls a directory tree looking for GitHub repositories and then git pulls them
-# periodically every night. Designed to be run as a periodic cron job or systemd
-# scheduled task to keep local mirrors of GitHub repositories in sync.
-#
-# Can operate in two modes:
-#   1. Local directory crawl - finds .git directories under a base directory
-#   2. GitHub profile download - downloads all repos from a GitHub user profile
-#
-# License: MIT (see LICENSE file)
-#
-# Usage:
-#   github-backup [--base-dir DIR] [--dry-run] [--verbose] [--debug]
-#   github-backup --install              # Install to /usr/local/bin
-#   github-backup --update              # Download latest and reinstall
-#   github-backup --uninstall           # Remove installed script
-#   github-backup --profile USER         # Download all repos from GitHub user USER
-#   github-backup --list-repos USER      List repos from GitHub user USER
-#
-# Environment variables:
-#   GITHUB_BACKUP_BASE_DIR       Base directory to search for git repos (default: /root)
-#   GITHUB_BACKUP_DRY_RUN       If set to "1", only report repos that would be pulled
-#   GITHUB_BACKUP_VERBOSE       If set, print each repo as it's processed
-#   GITHUB_BACKUP_LOG_FILE      Path to log file (default: /var/log/github-backup.log)
-#   GITHUB_BACKUP_EMAIL         Email address for completion notification
-#   GITHUB_BACKUP_SKIP_LIST     Comma-separated list of repo names/dirs to skip
-#   GITHUB_BACKUP_TOKEN         GitHub API token (optional, increases rate limit)
-#
-# Quick Start:
-#   # Install the script
-#   github-backup --install
-#
-#   # Download all repos from a GitHub user
-#   github-backup --profile USERNAME
-#
-#   # List repos from a GitHub user
-#   github-backup --list-repos USERNAME
-#
-#   # Regular local directory crawl
-#   github-backup --base-dir /path/to/repos
-#
-# Quick Update:
-#   github-backup update
-#
-# Quick Uninstall:
-#   github-backup uninstall
-#
-# Quick Example:
-#   # Download all repos from octocat
-#   github-backup --profile octocat
-#
-#   # List all repos from octocat
-#   github-backup --list-repos octocat
-#
-# Quick Update:
-#   github-backup update
-#
-# Quick Uninstall:
-#   github-backup uninstall
-#
-# Quick Example:
-#   # Download all repos from octocat
-#   github-backup --profile octocat
-#
-#   # List all repos from octocat
-#   github-backup --list-repos octocat
-#
+# github-backup: safely keep local GitHub working trees current.
+# Install, setup, and systemd control follow the same shape as wg-manager:
+#   install   copies this script and Bash completion
+#   setup     writes configuration, the base directory, and systemd units
+#   enable    arms the timer; start runs a backup now
+# SPDX-License-Identifier: MIT
 
-set -u
+set -euo pipefail
 
-# ── Color support ──────────────────────────────────────────────────────────────
-if [[ -t 1 ]]; then
-  C_OK=$'\e[32m'
-  C_WARN=$'\e[33m'
-  C_ERR=$'\e[31m'
-  C_RESET=$'\e[0m'
-else
-  C_OK=""
-  C_WARN=""
-  C_ERR=""
-  C_RESET=""
-fi
+VERSION="1.2.0"
+PROGRAM="github-backup"
+INSTALL_PATH="${GITHUB_BACKUP_INSTALL_PATH:-/usr/local/bin/github-backup}"
+UPDATE_URL="${GITHUB_BACKUP_UPDATE_URL:-https://raw.githubusercontent.com/peternickol/github-backup/master/github-backup.sh}"
+SYSTEMD_DIR="${GITHUB_BACKUP_SYSTEMD_DIR:-/etc/systemd/system}"
+DEFAULTS_FILE="${GITHUB_BACKUP_DEFAULTS_FILE:-/etc/default/github-backup}"
+API_URL="${GITHUB_BACKUP_API_URL:-https://api.github.com}"
+SYSTEMCTL_BIN="${GITHUB_BACKUP_SYSTEMCTL:-systemctl}"
+SERVICE_NAME="github-backup.service"
+TIMER_NAME="github-backup.timer"
 
-# ── Defaults ───────────────────────────────────────────────────────────────────
-BASE_DIR="${GITHUB_BACKUP_BASE_DIR:-/root}"
+COMMAND="sync"
 DRY_RUN=0
 VERBOSE=0
 DEBUG=0
-SKIP_LIST=()
-LOG_FILE="${GITHUB_BACKUP_LOG_FILE:-/var/log/github-backup.log}"
-EMAIL_TO="${GITHUB_BACKUP_EMAIL:-}"
-SKIP_LIST_STR="${GITHUB_BACKUP_SKIP_LIST:-}"
+QUIET=0
 FORCE=0
+FORCE_FAST_FORWARD=0
+NO_COMPLETION=0
+COMPLETION_ONLY=0
+UNINSTALL_COMPLETION=0
+INSTALL_SYSTEMD=1
+PURGE_CONFIG=0
 
-# ── Helper functions ───────────────────────────────────────────────────────────
+BASE_DIR=""
+PROFILE=""
+LOG_FILE=""
+EMAIL_TO=""
+TOKEN=""
+SKIP_LIST_RAW=""
+SCHEDULE="*-*-* 02:00:00"
+PROFILE_USERNAME=""
+LIST_USERNAME=""
+SKIP_LIST=()
+declare -A FILE_CFG=()
 
-is_skipped() {
-  local dirname="$1"
-  for skipped in "${SKIP_LIST[@]}"; do
-    if [[ "$dirname" == "$skipped" ]] || [[ "$dirname" == *"$skipped"* ]]; then
-      return 0
-    fi
-  done
-  return 1
+updated_count=0
+unchanged_count=0
+cloned_count=0
+skipped_count=0
+failed_count=0
+LOG_WARNED=0
+LOCK_ACQUIRED=0
+
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    C_INFO=$'\e[36m'
+    C_OK=$'\e[32m'
+    C_WARN=$'\e[33m'
+    C_ERR=$'\e[31m'
+    C_RESET=$'\e[0m'
+else
+    C_INFO="" C_OK="" C_WARN="" C_ERR="" C_RESET=""
+fi
+
+info() {
+    [[ "$QUIET" -eq 0 ]] || return 0
+    printf '%s[INFO]%s %s\n' "$C_INFO" "$C_RESET" "$*"
 }
-
-log_msg() {
-  local message="$1"
-  local timestamp
-  timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
-  echo "[${timestamp}] ${message}" >> "$LOG_FILE"
-}
-
-# Alias log for convenience in management commands
-log() {
-  log_msg "$@"
-}
-
-die() {
-  printf '%sError: %s\n' "$C_ERR" "$*" >&2
-  exit 1
-}
-
-warn() {
-  printf '%sWarning: %s\n' "$C_WARN" "$*" >&2
-}
-
 ok() {
-  printf '%sOK\n' "$C_OK"
+    [[ "$QUIET" -eq 0 ]] || return 0
+    printf '%s[OK]%s %s\n' "$C_OK" "$C_RESET" "$*"
+}
+warn() {
+    [[ "$QUIET" -eq 0 ]] || return 0
+    printf '%s[WARN]%s %s\n' "$C_WARN" "$C_RESET" "$*" >&2
+}
+error() { printf '%s[ERROR]%s %s\n' "$C_ERR" "$C_RESET" "$*" >&2; }
+die() { error "$*"; exit 1; }
+die_code() {
+    local code="$1"
+    shift
+    error "$*"
+    exit "$code"
+}
+debug() {
+    if [[ "$DEBUG" -eq 1 ]]; then
+        printf '[DEBUG] %s\n' "$*" >&2
+    fi
+}
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+log_message() {
+    local level="$1"
+    shift
+    local message="$*"
+    local directory
+    directory="$(dirname "$LOG_FILE")"
+    if [[ -n "$LOG_FILE" ]] && mkdir -p "$directory" 2>/dev/null && touch "$LOG_FILE" 2>/dev/null; then
+        printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$level" "$message" >> "$LOG_FILE"
+        return 0
+    fi
+    if [[ "$LOG_WARNED" -eq 0 ]]; then
+        LOG_WARNED=1
+        printf '%s[WARN]%s Could not write log file: %s\n' "$C_WARN" "$C_RESET" "$LOG_FILE" >&2
+    fi
 }
 
-die() {
-  printf '%sError: %s\n' "$C_ERR" "$*" >&2
-  exit 1
+need_value() {
+    local option="$1"
+    local value="${2:-}"
+    [[ -n "$value" && "$value" != -* ]] || die "$option requires a value."
+}
+
+require_root() {
+    [[ "$(id -u)" -eq 0 ]] && return 0
+    local path
+    for path in "$@"; do
+        case "$path" in
+            /etc|/etc/*|/usr/local|/usr/local/*|/var/log|/var/log/*|/run|/run/*)
+                die_code 2 "must be run as root. Try: sudo $PROGRAM ${COMMAND:-}"
+                ;;
+        esac
+    done
 }
 
 self_path() {
-  if command -v readlink >/dev/null 2>&1; then
-    readlink -f "$0" 2>/dev/null || echo "$0"
-  else
-    echo "$0"
-  fi
+    if have_cmd readlink; then
+        readlink -f "$0" 2>/dev/null || printf '%s\n' "$0"
+    else
+        printf '%s\n' "$0"
+    fi
 }
 
-# ── Install configuration ──────────────────────────────────────────────────────
-INSTALL_PATH="/usr/local/bin/github-backup"
+trim() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
 
-# ── GitHub API helper ─────────────────────────────────────────────────────────
+usage() {
+    cat <<EOF
+Usage:
+  $PROGRAM [sync] [options]
+  $PROGRAM profile USER [options]
+  $PROGRAM list-repos USER [options]
+  $PROGRAM setup [options]
+  $PROGRAM install [options]
+  $PROGRAM update [--no-completion]
+  $PROGRAM uninstall [--purge-config]
+  $PROGRAM enable|disable|start|stop|restart|status|journal
+  $PROGRAM is-enabled|is-active
+
+Commands:
+  sync                 Update GitHub working trees under the base directory.
+                       A saved profile makes sync clone and update that profile.
+  profile USER         Clone missing owned repositories and update the rest.
+  list-repos USER      Print repository names. Nothing is cloned or locked.
+  setup                Write configuration, the base directory, and systemd units.
+                       Does not arm the timer. Run enable after setup.
+  install              Copy this script to $INSTALL_PATH and install completion.
+  update               Download the published script and install it.
+  uninstall            Remove the command, units, and completion. Data stays.
+  enable               systemctl enable --now $TIMER_NAME
+  disable              systemctl disable --now $TIMER_NAME
+  start                systemctl start $SERVICE_NAME (run one backup now)
+  stop                 systemctl stop $SERVICE_NAME
+  restart              systemctl restart $SERVICE_NAME (run one backup now)
+  is-enabled           Print enabled or disabled for the timer. Exit 0 or 1.
+  is-active            Print active or inactive for the timer. Exit 0 or 1.
+  status               Show the timer, then the service. The exit status is the timer.
+  journal              Follow the service journal.
+
+Repository options:
+  --base-dir DIR           Repository root or profile clone destination
+                           (default: \$HOME/github-backup)
+  --profile USER           On sync, clone and update USER. On setup, save USER.
+  --list-repos USER        Run list-repos for USER
+  --skip REPO              Skip one repository name (repeatable, exact match)
+  --skip-list A,B,C        Skip comma-separated names. Replaces the saved list.
+  --dry-run                Show actions without fetching, cloning, or changing refs
+  --verbose                Also print repositories that are already current.
+                           For list-repos, add a public or private column.
+  --debug                  Print each fetch target on stderr, even with --quiet
+  --quiet, -q              Hide [INFO], [OK], [WARN], skip lines, and the summary.
+                           Errors still print. The log file is still written.
+  --force-fast-forward     Reset a branch that has a GitHub upstream, then
+                           git clean -fd. Refuses detached HEAD, a missing
+                           upstream, a non-GitHub remote, and a Git operation
+                           already in progress.
+  --log-file FILE          Log path for this run (default: /var/log/github-backup.log)
+
+Setup options:
+  --schedule CALENDAR      systemd OnCalendar value (default: *-*-* 02:00:00).
+                           setup --force without this resets the timer to 02:00.
+  --no-systemd             Write configuration and skip the service and timer
+  --force, -f              Replace existing units and rewrite the configuration.
+                           An uncommented GITHUB_BACKUP_TOKEN= line is kept.
+                           A token in the environment is never written.
+
+Install options:
+  --force, -f              Overwrite an existing binary or completion file
+  --no-completion          Install or update the binary only
+  --completion-only        Install Bash completion and exit
+  --uninstall-completion   Remove Bash completion and exit
+
+Uninstall options:
+  --purge-config           Also remove $DEFAULTS_FILE.
+                           Repositories, the base directory, and the log stay.
+
+Other:
+  -V, --version            Show version
+  -h, --help               Show this help
+
+Flags may appear before or after the command. These older forms still work:
+--profile USER, --list-repos USER, --install, --update, and --uninstall.
+An option value cannot be empty or start with "-". --skip adds names to the
+configured skip list. --skip-list replaces that configured list for this run.
+
+--quiet also hides the enabled/active word from is-enabled and is-active, and
+hides systemctl output from enable, disable, start, stop, restart, and status.
+The exit status stays. journal still follows the log.
+
+Nested checkouts and submodules are left alone. Clean branches behind GitHub
+are fast-forwarded. Dirty, ahead, and diverged branches are skipped.
+
+Examples:
+  github-backup sync --base-dir ~/src --dry-run --verbose
+  github-backup sync --base-dir ~/src --skip repo-one --skip-list repo-two,repo-three
+  github-backup sync --base-dir ~/src --force-fast-forward --dry-run
+  github-backup profile octocat --base-dir /mnt/nas/github/octocat --dry-run
+  github-backup list-repos octocat --verbose
+  sudo github-backup install
+  sudo github-backup install --no-completion
+  sudo github-backup install --completion-only
+  sudo github-backup setup --base-dir /mnt/nas/github --profile USER --schedule '*-*-* 02:00:00'
+  sudo github-backup setup --no-systemd --base-dir /mnt/nas/github --profile USER
+  sudo github-backup setup --force --schedule 'Mon *-*-* 03:00:00'
+  sudo github-backup enable
+  sudo github-backup disable
+  sudo github-backup start
+  sudo github-backup stop
+  sudo github-backup restart
+  sudo github-backup is-enabled
+  sudo github-backup is-enabled --quiet
+  sudo github-backup is-active
+  sudo github-backup status
+  sudo github-backup journal
+  sudo github-backup update
+  sudo github-backup update --no-completion
+  sudo github-backup uninstall
+  sudo github-backup uninstall --purge-config
+  github-backup --version
+EOF
+    exit 0
+}
+
+unquote_value() {
+    local value="$1"
+    if [[ ${#value} -ge 2 && "$value" == \"*\" ]]; then
+        value="${value:1:${#value}-2}"
+        value="${value//\\n/$'\n'}"
+        value="${value//\\\"/\"}"
+        value="${value//\\\\/\\}"
+    elif [[ ${#value} -ge 2 && "$value" == \'*\' ]]; then
+        value="${value:1:${#value}-2}"
+    fi
+    printf '%s' "$value"
+}
+
+load_file_cfg() {
+    FILE_CFG=()
+    [[ -f "$DEFAULTS_FILE" && -r "$DEFAULTS_FILE" ]] || return 0
+    local line="" key="" value=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" == *=* ]] || continue
+        key="$(trim "${line%%=*}")"
+        value="$(unquote_value "${line#*=}")"
+        case "$key" in
+            GITHUB_BACKUP_BASE_DIR|GITHUB_BACKUP_PROFILE|GITHUB_BACKUP_LOG_FILE|GITHUB_BACKUP_EMAIL|GITHUB_BACKUP_TOKEN|GITHUB_BACKUP_SKIP_LIST)
+                FILE_CFG["$key"]="$value"
+                ;;
+        esac
+    done < "$DEFAULTS_FILE"
+}
+
+config_value() {
+    local name="$1"
+    local fallback="$2"
+    if [[ -n "${!name+x}" ]]; then
+        printf '%s' "${!name}"
+    elif [[ -n "${FILE_CFG[$name]+x}" ]]; then
+        printf '%s' "${FILE_CFG[$name]}"
+    else
+        printf '%s' "$fallback"
+    fi
+}
+
+apply_config() {
+    load_file_cfg
+    BASE_DIR="$(config_value GITHUB_BACKUP_BASE_DIR "$HOME/github-backup")"
+    PROFILE="$(config_value GITHUB_BACKUP_PROFILE "")"
+    LOG_FILE="$(config_value GITHUB_BACKUP_LOG_FILE "/var/log/github-backup.log")"
+    EMAIL_TO="$(config_value GITHUB_BACKUP_EMAIL "")"
+    if [[ -n "${GITHUB_BACKUP_TOKEN+x}" ]]; then
+        TOKEN="$GITHUB_BACKUP_TOKEN"
+    elif [[ -n "${GH_TOKEN+x}" ]]; then
+        TOKEN="$GH_TOKEN"
+    else
+        TOKEN="$(config_value GITHUB_BACKUP_TOKEN "")"
+    fi
+    SKIP_LIST_RAW="$(config_value GITHUB_BACKUP_SKIP_LIST "")"
+    if [[ -n "${GITHUB_BACKUP_SCHEDULE+x}" ]]; then
+        SCHEDULE="$GITHUB_BACKUP_SCHEDULE"
+    fi
+}
+
+append_skip_name() {
+    local name
+    name="$(trim "$1")"
+    [[ -n "$name" ]] || return 0
+    SKIP_LIST+=("$name")
+}
+
+append_csv_skip() {
+    local raw="$1"
+    local item
+    local -a parts=()
+    IFS=',' read -r -a parts <<< "$raw" || true
+    [[ "${#parts[@]}" -gt 0 ]] || return 0
+    for item in "${parts[@]}"; do
+        append_skip_name "$item"
+    done
+}
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            sync) COMMAND="sync"; shift ;;
+            profile)
+                COMMAND="profile"
+                need_value "$1" "${2:-}"
+                PROFILE_USERNAME="$2"
+                shift 2
+                ;;
+            list-repos)
+                COMMAND="list-repos"
+                need_value "$1" "${2:-}"
+                LIST_USERNAME="$2"
+                shift 2
+                ;;
+            setup) COMMAND="setup"; shift ;;
+            install|--install) COMMAND="install"; shift ;;
+            update|--update) COMMAND="update"; shift ;;
+            uninstall|--uninstall) COMMAND="uninstall"; shift ;;
+            enable|disable|start|stop|restart|is-enabled|is-active|status|journal)
+                COMMAND="$1"
+                shift
+                ;;
+            --profile)
+                need_value "$1" "${2:-}"
+                PROFILE="$2"
+                PROFILE_USERNAME="$2"
+                if [[ "$COMMAND" == "sync" ]]; then
+                    COMMAND="profile"
+                fi
+                shift 2
+                ;;
+            --list-repos)
+                need_value "$1" "${2:-}"
+                COMMAND="list-repos"
+                LIST_USERNAME="$2"
+                shift 2
+                ;;
+            --base-dir)
+                need_value "$1" "${2:-}"
+                BASE_DIR="$2"
+                shift 2
+                ;;
+            --skip)
+                need_value "$1" "${2:-}"
+                append_skip_name "$2"
+                shift 2
+                ;;
+            --skip-list)
+                need_value "$1" "${2:-}"
+                SKIP_LIST_RAW="$2"
+                shift 2
+                ;;
+            --log-file)
+                need_value "$1" "${2:-}"
+                LOG_FILE="$2"
+                shift 2
+                ;;
+            --schedule)
+                need_value "$1" "${2:-}"
+                SCHEDULE="$2"
+                shift 2
+                ;;
+            --dry-run) DRY_RUN=1; shift ;;
+            --verbose) VERBOSE=1; shift ;;
+            --debug) DEBUG=1; shift ;;
+            -q|--quiet) QUIET=1; shift ;;
+            --force-fast-forward) FORCE_FAST_FORWARD=1; shift ;;
+            --force|-f) FORCE=1; shift ;;
+            --no-completion) NO_COMPLETION=1; shift ;;
+            --completion-only) COMPLETION_ONLY=1; shift ;;
+            --uninstall-completion) UNINSTALL_COMPLETION=1; shift ;;
+            --no-systemd) INSTALL_SYSTEMD=0; shift ;;
+            --purge-config) PURGE_CONFIG=1; shift ;;
+            -V|--version) printf '%s %s\n' "$PROGRAM" "$VERSION"; exit 0 ;;
+            -h|--help) usage ;;
+            *) die "Unknown argument: $1" ;;
+        esac
+    done
+
+    if [[ -n "$SKIP_LIST_RAW" ]]; then
+        append_csv_skip "$SKIP_LIST_RAW"
+    fi
+    if [[ "$SCHEDULE" == *$'\n'* ]]; then
+        die "Schedule must be a single line."
+    fi
+    if [[ "$COMMAND" == "sync" && -n "$PROFILE" ]]; then
+        COMMAND="profile"
+        PROFILE_USERNAME="$PROFILE"
+    fi
+}
+
+is_skipped() {
+    local name="$1"
+    local skipped
+    [[ "${#SKIP_LIST[@]}" -gt 0 ]] || return 1
+    for skipped in "${SKIP_LIST[@]}"; do
+        if [[ -n "$skipped" && "$name" == "$skipped" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+is_github_url() {
+    local url="$1"
+    [[ "$url" =~ (^|@|://)github\.com[:/] ]]
+}
+
+operation_in_progress() {
+    local repo="$1"
+    local marker git_dir
+    git_dir="$(git -C "$repo" rev-parse --absolute-git-dir 2>/dev/null || true)"
+    [[ -n "$git_dir" ]] || return 1
+    for marker in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG rebase-merge rebase-apply sequencer; do
+        if [[ -e "$git_dir/$marker" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+repo_is_dirty() {
+    local repo="$1"
+    [[ -n "$(git -C "$repo" status --porcelain=v1 --untracked-files=all 2>/dev/null)" ]]
+}
+
+repo_root() {
+    git -C "$1" rev-parse --show-toplevel 2>/dev/null
+}
+
+physical_dir() {
+    local target="$1"
+    local resolved=""
+    resolved="$(cd "$target" 2>/dev/null && pwd -P)" || resolved=""
+    if [[ -n "$resolved" ]]; then
+        printf '%s\n' "$resolved"
+    else
+        printf '%s\n' "$target"
+    fi
+}
+
+is_nested_repository() {
+    local toplevel="$1"
+    local base_phys dir
+    base_phys="$(physical_dir "$BASE_DIR")"
+    toplevel="$(physical_dir "$toplevel")"
+    [[ "$toplevel" == "$base_phys" ]] && return 1
+    dir="$(dirname "$toplevel")"
+    while [[ "$dir" == "$base_phys"/* ]]; do
+        if [[ -e "$dir/.git" ]]; then
+            return 0
+        fi
+        dir="$(dirname "$dir")"
+    done
+    if [[ -e "$base_phys/.git" ]]; then
+        return 0
+    fi
+    return 1
+}
+
+git_with_auth() {
+    if [[ -n "$TOKEN" ]]; then
+        local auth_header
+        printf -v auth_header 'Authorization: Bearer %s' "$TOKEN"
+        GIT_TERMINAL_PROMPT=0 \
+            GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0=http.extraHeader \
+            GIT_CONFIG_VALUE_0="$auth_header" \
+            git "$@"
+    else
+        GIT_TERMINAL_PROMPT=0 git "$@"
+    fi
+}
+
+record_skip() {
+    local repo="$1"
+    local reason="$2"
+    skipped_count=$((skipped_count + 1))
+    warn "Skipping $(basename "$repo"): $reason"
+    log_message WARN "Skipped $repo: $reason"
+}
+
+record_failure() {
+    local repo="$1"
+    local reason="$2"
+    failed_count=$((failed_count + 1))
+    error "$(basename "$repo"): $reason"
+    log_message ERROR "$repo: $reason"
+}
+
+acquire_lock() {
+    [[ "$LOCK_ACQUIRED" -eq 1 ]] && return 0
+    local lock="$BASE_DIR/.github-backup.lock"
+    have_cmd flock || die "flock is required (util-linux)."
+    exec 9>"$lock" || die "Could not create lock file: $lock"
+    if ! flock -n 9; then
+        die "Another github-backup is already running for $BASE_DIR."
+    fi
+    LOCK_ACQUIRED=1
+}
+
+sync_repo() {
+    local repo="$1"
+    local name branch upstream remote remote_url local_oid upstream_oid base output
+    name="$(basename "$repo")"
+
+    if is_skipped "$name"; then
+        record_skip "$repo" "listed in skip configuration"
+        return 0
+    fi
+
+    if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        record_skip "$repo" "not a Git working tree"
+        return 0
+    fi
+
+    if operation_in_progress "$repo"; then
+        record_skip "$repo" "a merge, rebase, cherry-pick, revert, or bisect is in progress"
+        return 0
+    fi
+
+    local git_dir index_lock
+    git_dir="$(git -C "$repo" rev-parse --absolute-git-dir 2>/dev/null || true)"
+    index_lock="$git_dir/index.lock"
+    if [[ -n "$git_dir" && -e "$index_lock" ]]; then
+        record_skip "$repo" "Git index is locked"
+        return 0
+    fi
+
+    branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    if [[ -z "$branch" ]]; then
+        record_skip "$repo" "detached HEAD"
+        return 0
+    fi
+
+    upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+    if [[ -z "$upstream" ]]; then
+        record_skip "$repo" "branch '$branch' has no upstream"
+        return 0
+    fi
+
+    remote="${upstream%%/*}"
+    remote_url="$(git -C "$repo" config --get "remote.$remote.url" 2>/dev/null || true)"
+    if [[ -z "$remote_url" ]] || ! is_github_url "$remote_url"; then
+        record_skip "$repo" "upstream remote is not GitHub"
+        return 0
+    fi
+
+    if [[ "$FORCE_FAST_FORWARD" -eq 0 ]] && repo_is_dirty "$repo"; then
+        record_skip "$repo" "working tree contains staged, unstaged, or untracked work"
+        return 0
+    fi
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        if [[ "$FORCE_FAST_FORWARD" -eq 1 ]]; then
+            info "[DRY-RUN] Would fetch and destructively reset $name to $upstream"
+        else
+            info "[DRY-RUN] Would fetch $name and fast-forward only if clean and behind"
+        fi
+        return 0
+    fi
+
+    debug "Fetching $remote for $repo"
+    if ! output="$(git_with_auth -C "$repo" fetch --prune "$remote" 2>&1)"; then
+        record_failure "$repo" "fetch failed: $output"
+        return 0
+    fi
+
+    local_oid="$(git -C "$repo" rev-parse 'HEAD^{commit}' 2>/dev/null || true)"
+    upstream_oid="$(git -C "$repo" rev-parse "$upstream^{commit}" 2>/dev/null || true)"
+    if [[ -z "$local_oid" || -z "$upstream_oid" ]]; then
+        record_failure "$repo" "could not resolve local or upstream commit"
+        return 0
+    fi
+
+    if [[ "$FORCE_FAST_FORWARD" -eq 1 ]]; then
+        if [[ "$local_oid" == "$upstream_oid" ]] && ! repo_is_dirty "$repo"; then
+            unchanged_count=$((unchanged_count + 1))
+            [[ "$VERBOSE" -eq 1 ]] && ok "$name already current"
+            log_message OK "$repo already current"
+            return 0
+        fi
+        warn "Force-aligning $name to $upstream; local changes and local-only commits will be discarded"
+        if ! output="$(git -C "$repo" reset --hard "$upstream_oid" 2>&1)"; then
+            record_failure "$repo" "hard reset failed: $output"
+            return 0
+        fi
+        if ! output="$(git -C "$repo" clean -fd 2>&1)"; then
+            record_failure "$repo" "removing untracked files failed: $output"
+            return 0
+        fi
+        updated_count=$((updated_count + 1))
+        ok "$name aligned to $upstream"
+        log_message OK "$repo aligned to $upstream"
+        return 0
+    fi
+
+    if repo_is_dirty "$repo"; then
+        record_skip "$repo" "working tree changed while the remote was being fetched"
+        return 0
+    fi
+
+    if [[ "$local_oid" == "$upstream_oid" ]]; then
+        unchanged_count=$((unchanged_count + 1))
+        [[ "$VERBOSE" -eq 1 ]] && ok "$name already current"
+        log_message OK "$repo already current"
+        return 0
+    fi
+
+    base="$(git -C "$repo" merge-base "$local_oid" "$upstream_oid" 2>/dev/null || true)"
+    if [[ "$base" == "$local_oid" ]]; then
+        if output="$(git -C "$repo" merge --ff-only "$upstream" 2>&1)"; then
+            updated_count=$((updated_count + 1))
+            ok "$name fast-forwarded to $upstream"
+            log_message OK "$repo fast-forwarded to $upstream"
+        else
+            record_failure "$repo" "fast-forward failed: $output"
+        fi
+    elif [[ "$base" == "$upstream_oid" ]]; then
+        record_skip "$repo" "local branch is ahead of GitHub"
+    else
+        record_skip "$repo" "local branch has diverged from GitHub"
+    fi
+}
+
+sync_tree() {
+    [[ -d "$BASE_DIR" ]] || die "Base directory does not exist: $BASE_DIR"
+    acquire_lock
+    local -A seen=()
+    local marker repo toplevel
+    while IFS= read -r -d '' marker; do
+        repo="$(dirname "$marker")"
+        toplevel="$(repo_root "$repo" || true)"
+        [[ -n "$toplevel" ]] || continue
+        toplevel="$(physical_dir "$toplevel")"
+        if [[ -n "${seen[$toplevel]+x}" ]]; then
+            continue
+        fi
+        seen["$toplevel"]=1
+        if is_nested_repository "$toplevel"; then
+            record_skip "$toplevel" "inside another repository"
+            continue
+        fi
+        sync_repo "$toplevel"
+    done < <(find "$BASE_DIR" \( -type d -o -type f \) -name .git -print0 2>/dev/null)
+}
 
 github_api() {
-  local endpoint="$1"
-  local url="https://api.github.com${endpoint}"
-  local curl_opts=(-fsSL -H "User-Agent: github-backup" -H "Accept: application/vnd.github+json")
-  
-  if [[ -n "$GITHUB_BACKUP_TOKEN" ]]; then
-    curl_opts+=("-H" "Authorization: token $GITHUB_BACKUP_TOKEN")
-  fi
-  
-  curl "${curl_opts[@]}" "$url" 2>/dev/null
+    local endpoint="$1"
+    local -a options=(--fail-with-body --silent --show-error --location
+        -H "Accept: application/vnd.github+json"
+        -H "X-GitHub-Api-Version: 2022-11-28"
+        -H "User-Agent: github-backup/$VERSION")
+    if [[ -n "$TOKEN" ]]; then
+        local auth_header
+        printf -v auth_header 'Authorization: Bearer %s' "$TOKEN"
+        options+=(-H "$auth_header")
+    fi
+    curl "${options[@]}" "$API_URL$endpoint"
 }
 
-github_list_repos() {
-  local username="$1"
-  local result=""
-  local page=1
-  local per_page=100
-  
-  while true; do
-    local response
-    response=$(github_api "users/${username}/repos?per_page=${per_page}&page=${page}")
-    
-    [[ -z "$response" ]] && break
-    
-    local count=$(echo "$response" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
-    
-    if [[ $count -eq 0 ]]; then
-      break
-    fi
-    
-    # Extract repo names
-    local repos
-    repos=$(echo "$response" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for r in data:
-    print(r['name'])
-" 2>/dev/null || echo "")
-    
-    if [[ -z "$repos" ]]; then
-      break
-    fi
-    
-    result="${result} ${repos}"
-    page=$((page + 1))
-    
-    # Respect rate limits - sleep briefly
-    sleep 0.5
-  done
-  
-  echo "$result"
+validate_owner() {
+    local owner="$1"
+    [[ "$owner" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || die "Invalid GitHub profile name: $owner"
 }
 
-# ── Management commands ───────────────────────────────────────────────────────
+authenticated_login() {
+    local response=""
+    [[ -n "$TOKEN" ]] || return 0
+    response="$(github_api /user 2>/dev/null || true)"
+    if [[ -z "$response" ]]; then
+        warn "Could not read the authenticated GitHub login. Private repositories may be omitted."
+        return 0
+    fi
+    printf '%s' "$response" | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("login") or "")
+except Exception:
+    print("")
+' 2>/dev/null || true
+}
+
+github_owner_kind() {
+    local owner="$1"
+    local response=""
+    response="$(github_api "/users/$owner" 2>/dev/null || true)"
+    printf '%s' "$response" | python3 -c 'import json,sys
+try:
+    data=json.load(sys.stdin)
+except Exception:
+    print("user")
+    raise SystemExit(0)
+print("org" if data.get("type") == "Organization" else "user")
+' 2>/dev/null || printf '%s\n' user
+}
+
+github_repo_rows() {
+    local owner="$1"
+    local auth_login="" kind="" endpoint page response count
+    validate_owner "$owner"
+    auth_login="$(authenticated_login)"
+    kind="$(github_owner_kind "$owner")"
+    page=1
+
+    while true; do
+        if [[ "$kind" == "org" ]]; then
+            endpoint="/orgs/$owner/repos?type=all&sort=full_name&per_page=100&page=$page"
+        elif [[ -n "$auth_login" && "${auth_login,,}" == "${owner,,}" ]]; then
+            endpoint="/user/repos?affiliation=owner&visibility=all&sort=full_name&per_page=100&page=$page"
+        else
+            endpoint="/users/$owner/repos?type=owner&sort=full_name&per_page=100&page=$page"
+        fi
+
+        if ! response="$(github_api "$endpoint")"; then
+            return 1
+        fi
+        count="$(python3 -c 'import json,sys
+try:
+    data=json.load(sys.stdin)
+except Exception:
+    print(-1)
+    raise SystemExit(0)
+print(len(data) if isinstance(data, list) else -1)' <<< "$response" 2>/dev/null || printf '%s' '-1')"
+        if [[ "$count" -lt 0 ]]; then
+            die "Could not parse the GitHub repository list for '$owner'."
+        fi
+        if [[ "$count" -eq 0 ]]; then
+            break
+        fi
+
+        OWNER_FILTER="$owner" python3 -c '
+import json, os, sys
+owner = os.environ["OWNER_FILTER"].casefold()
+for repo in json.load(sys.stdin):
+    if str(repo.get("owner", {}).get("login", "")).casefold() != owner:
+        continue
+    fields = [
+        repo.get("name", ""),
+        repo.get("clone_url", ""),
+        "private" if repo.get("private") else "public",
+    ]
+    print("\t".join(str(field) for field in fields))
+' <<< "$response" || die "Could not parse the GitHub repository list for '$owner'."
+        page=$((page + 1))
+    done
+}
+
+list_profile_repositories() {
+    local owner="$1"
+    local rows=""
+    if ! rows="$(github_repo_rows "$owner")"; then
+        die "GitHub API request failed for profile '$owner'."
+    fi
+    if [[ -z "$rows" ]]; then
+        warn "No repositories visible for GitHub profile '$owner'."
+        return 0
+    fi
+    printf '%s\n' "$rows" | while IFS=$'\t' read -r name _clone visibility; do
+        if [[ "$VERBOSE" -eq 1 ]]; then
+            printf '%-48s %s\n' "$name" "$visibility"
+        else
+            printf '%s\n' "$name"
+        fi
+    done
+}
+
+clone_repo() {
+    local owner="$1" name="$2" clone_url="$3" visibility="$4"
+    local destination="$BASE_DIR/$name"
+    if is_skipped "$name"; then
+        record_skip "$destination" "listed in skip configuration"
+        return 0
+    fi
+    if [[ -e "$destination" || -L "$destination" ]]; then
+        if [[ -L "$destination" ]]; then
+            record_skip "$destination" "destination is a symbolic link"
+        elif [[ ! -d "$destination/.git" && ! -f "$destination/.git" ]]; then
+            record_skip "$destination" "destination is not a repository root"
+        elif git -C "$destination" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            local destination_root="" destination_physical=""
+            destination_root="$(repo_root "$destination" || true)"
+            destination_physical="$(cd "$destination" 2>/dev/null && pwd -P)" || destination_physical=""
+            if [[ -z "$destination_root" || "$destination_root" != "$destination_physical" ]]; then
+                record_skip "$destination" "destination is inside another repository, not a repository root"
+            else
+                sync_repo "$destination"
+            fi
+        else
+            record_skip "$destination" "destination exists but is not a Git repository"
+        fi
+        return 0
+    fi
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        info "[DRY-RUN] Would clone $owner/$name into $destination ($visibility)"
+        return 0
+    fi
+
+    mkdir -p "$BASE_DIR" || {
+        record_failure "$destination" "could not create base directory"
+        return 0
+    }
+
+    local output=""
+    if output="$(git_with_auth clone --origin origin "$clone_url" "$destination" 2>&1)"; then
+        cloned_count=$((cloned_count + 1))
+        ok "Cloned $owner/$name"
+        log_message OK "Cloned $destination"
+    else
+        record_failure "$destination" "clone failed: $output"
+    fi
+}
+
+sync_profile() {
+    local owner="$1"
+    local rows=""
+    if ! rows="$(github_repo_rows "$owner")"; then
+        die "GitHub API request failed for profile '$owner'."
+    fi
+    if [[ -z "$rows" ]]; then
+        warn "No repositories visible for GitHub profile '$owner'."
+        return 0
+    fi
+    if [[ -d "$BASE_DIR" ]]; then
+        acquire_lock
+    elif [[ "$DRY_RUN" -eq 0 ]]; then
+        mkdir -p "$BASE_DIR" || die "Could not create base directory: $BASE_DIR"
+        acquire_lock
+    fi
+    while IFS=$'\t' read -r name clone_url visibility; do
+        [[ -n "$name" ]] || continue
+        clone_repo "$owner" "$name" "$clone_url" "$visibility"
+    done <<< "$rows"
+}
+
+send_notification() {
+    [[ -n "$EMAIL_TO" ]] || return 0
+    [[ "$failed_count" -gt 0 ]] || return 0
+    local subject="github-backup: $failed_count failed, $skipped_count skipped"
+    local body="Updated: $updated_count
+Cloned: $cloned_count
+Unchanged: $unchanged_count
+Skipped: $skipped_count
+Failed: $failed_count
+Log: $LOG_FILE"
+    if have_cmd mail; then
+        printf '%s\n' "$body" | mail -s "$subject" "$EMAIL_TO" \
+            || warn "Could not send notification to $EMAIL_TO"
+    elif have_cmd sendmail; then
+        printf 'Subject: %s\nTo: %s\n\n%s\n' "$subject" "$EMAIL_TO" "$body" | sendmail "$EMAIL_TO" \
+            || warn "Could not send notification to $EMAIL_TO"
+    else
+        warn "Email requested but neither mail nor sendmail is installed"
+    fi
+}
+
+print_summary() {
+    local summary="Summary: $updated_count updated, $cloned_count cloned, $unchanged_count unchanged, $skipped_count skipped, $failed_count failed"
+    if [[ "$QUIET" -eq 0 ]]; then
+        printf '\n%s\n' "$summary"
+    fi
+    log_message INFO "$summary"
+}
+
+finish_backup() {
+    print_summary
+    send_notification
+    [[ "$failed_count" -eq 0 ]]
+}
+
+generate_bash_completion() {
+    cat <<'EOF'
+# bash completion for github-backup
+_github_backup() {
+    local cur prev words cword
+    if declare -F _init_completion >/dev/null 2>&1; then
+        _init_completion || return
+    else
+        cur="${COMP_WORDS[COMP_CWORD]}"
+        prev="${COMP_WORDS[COMP_CWORD-1]}"
+    fi
+    local commands="sync profile list-repos setup install update uninstall enable disable start stop restart is-enabled is-active status journal"
+    local options="--base-dir --profile --list-repos --skip --skip-list --dry-run --verbose --debug --quiet --force-fast-forward --log-file --schedule --no-systemd --purge-config --force --no-completion --completion-only --uninstall-completion --version --help -q -f -V -h"
+    if [[ "$prev" == "--base-dir" || "$prev" == "--log-file" ]]; then
+        COMPREPLY=( $(compgen -d -- "$cur") )
+        return 0
+    fi
+    COMPREPLY=( $(compgen -W "$commands $options" -- "$cur") )
+}
+complete -F _github_backup github-backup
+EOF
+}
+
+detect_completion_dir() {
+    if [[ -n "${GITHUB_BACKUP_COMPLETION_DIR:-}" ]]; then
+        printf '%s\n' "$GITHUB_BACKUP_COMPLETION_DIR"
+        return 0
+    fi
+    if [[ -d /usr/share/bash-completion/completions ]]; then
+        printf '%s\n' /usr/share/bash-completion/completions
+        return 0
+    fi
+    if [[ -d /etc/bash_completion.d ]]; then
+        printf '%s\n' /etc/bash_completion.d
+        return 0
+    fi
+    return 1
+}
+
+install_completion() {
+    local directory="" file="" temporary=""
+    directory="$(detect_completion_dir)" || {
+        warn "bash-completion directory not found; skipping completion"
+        return 0
+    }
+    require_root "$directory"
+    file="$directory/github-backup"
+    [[ ! -d "$file" ]] || die "$file is a directory, expected a completion file"
+    mkdir -p "$directory" || die "Could not create $directory"
+    if [[ -e "$file" && "$FORCE" -ne 1 ]]; then
+        die "Completion already exists at $file (use --force to overwrite)."
+    fi
+    temporary="$(mktemp "$directory/.github-backup.XXXXXX")" || die "Could not stage Bash completion"
+    generate_bash_completion > "$temporary" || { rm -f "$temporary"; die "Could not generate Bash completion"; }
+    chmod 0644 "$temporary" || { rm -f "$temporary"; die "Could not set completion permissions"; }
+    mv -f "$temporary" "$file" || { rm -f "$temporary"; die "Could not install Bash completion"; }
+    ok "Bash completion installed."
+}
+
+uninstall_completion() {
+    local directory="" file=""
+    directory="$(detect_completion_dir)" || {
+        warn "No bash-completion directory found."
+        return 0
+    }
+    require_root "$directory"
+    file="$directory/github-backup"
+    if [[ ! -e "$file" ]]; then
+        warn "No completion installed at $file"
+        return 0
+    fi
+    rm -f "$file"
+    ok "Bash completion removed."
+}
+
+install_binary() {
+    local src="$1"
+    local dest="$2"
+    if [[ "$(id -u)" -eq 0 ]]; then
+        install -m 0755 -o root -g root "$src" "$dest"
+    else
+        install -m 0755 "$src" "$dest"
+    fi
+}
+
+write_env_assignment() {
+    local key="$1"
+    local value="$2"
+    local escaped
+    if [[ "$value" =~ ^[A-Za-z0-9_@%+=:,./-]*$ ]]; then
+        printf '%s=%s\n' "$key" "$value"
+        return 0
+    fi
+    escaped="${value//\\/\\\\}"
+    escaped="${escaped//\"/\\\"}"
+    escaped="${escaped//$'\n'/\\n}"
+    printf '%s="%s"\n' "$key" "$escaped"
+}
+
+preserved_assignment() {
+    local key="$1"
+    local line=""
+    [[ -f "$DEFAULTS_FILE" ]] || return 1
+    line="$(grep -E "^${key}=" "$DEFAULTS_FILE" || true)"
+    line="${line%%$'\n'*}"
+    [[ -n "$line" ]] || return 1
+    printf '%s\n' "$line"
+}
+
+write_defaults_file() {
+    local directory="" temporary="" token_line=""
+    directory="$(dirname "$DEFAULTS_FILE")"
+    mkdir -p "$directory" || die "Could not create $directory"
+    if [[ -d "$DEFAULTS_FILE" ]]; then
+        die "$DEFAULTS_FILE is a directory, expected a file"
+    fi
+    if [[ -e "$DEFAULTS_FILE" && "$FORCE" -ne 1 ]]; then
+        warn "Configuration already exists at $DEFAULTS_FILE; preserving it"
+        return 0
+    fi
+    token_line="$(preserved_assignment GITHUB_BACKUP_TOKEN || true)"
+    temporary="$(mktemp "$directory/.github-backup.XXXXXX")" || die "Could not stage configuration in $directory"
+    if ! {
+        write_env_assignment GITHUB_BACKUP_BASE_DIR "$BASE_DIR"
+        write_env_assignment GITHUB_BACKUP_PROFILE "$PROFILE"
+        write_env_assignment GITHUB_BACKUP_LOG_FILE "$LOG_FILE"
+        if [[ -n "$EMAIL_TO" ]]; then
+            write_env_assignment GITHUB_BACKUP_EMAIL "$EMAIL_TO"
+        else
+            printf '%s\n' '# GITHUB_BACKUP_EMAIL=you@example.com'
+        fi
+        if [[ -n "$token_line" ]]; then
+            printf '%s\n' "$token_line"
+        else
+            printf '%s\n' '# GITHUB_BACKUP_TOKEN=github_pat_...'
+        fi
+        if [[ -n "$SKIP_LIST_RAW" ]]; then
+            write_env_assignment GITHUB_BACKUP_SKIP_LIST "$SKIP_LIST_RAW"
+        else
+            printf '%s\n' '# GITHUB_BACKUP_SKIP_LIST=repo-one,repo-two'
+        fi
+    } > "$temporary"; then
+        rm -f "$temporary"
+        die "Could not write staged configuration"
+    fi
+    chmod 0600 "$temporary" || { rm -f "$temporary"; die "Could not secure staged configuration"; }
+    mv -f "$temporary" "$DEFAULTS_FILE" || { rm -f "$temporary"; die "Could not install $DEFAULTS_FILE"; }
+    ok "Installed configuration: $DEFAULTS_FILE"
+}
+
+systemd_control_available() {
+    if [[ -n "${GITHUB_BACKUP_SYSTEMCTL:-}" ]]; then
+        [[ -x "$SYSTEMCTL_BIN" ]]
+        return
+    fi
+    [[ "$SYSTEMD_DIR" == /etc/systemd/system ]] && has_systemd
+}
+
+has_systemd() {
+    if [[ -n "${GITHUB_BACKUP_SYSTEMCTL:-}" ]]; then
+        [[ -x "$SYSTEMCTL_BIN" ]]
+        return
+    fi
+    have_cmd systemctl && systemctl --version >/dev/null 2>&1
+}
+
+run_systemctl() {
+    if [[ -n "${GITHUB_BACKUP_SYSTEMCTL:-}" ]]; then
+        "$SYSTEMCTL_BIN" "$@"
+        return
+    fi
+    if [[ "$QUIET" -eq 1 ]]; then
+        env PATH="/usr/sbin:/usr/bin:/sbin:/bin" systemctl "$@" >/dev/null
+    else
+        env PATH="/usr/sbin:/usr/bin:/sbin:/bin" systemctl "$@"
+    fi
+}
+
+require_units() {
+    [[ -f "$SYSTEMD_DIR/$SERVICE_NAME" && -f "$SYSTEMD_DIR/$TIMER_NAME" ]] \
+        || die "systemd units are not installed. Run: $PROGRAM setup"
+}
+
+write_systemd_units() {
+    local service="$SYSTEMD_DIR/$SERVICE_NAME"
+    local timer="$SYSTEMD_DIR/$TIMER_NAME"
+    local service_tmp="" timer_tmp=""
+    mkdir -p "$SYSTEMD_DIR" || die "Could not create $SYSTEMD_DIR"
+    if [[ "$FORCE" -ne 1 && ( -e "$service" || -e "$timer" ) ]]; then
+        warn "systemd units already exist; preserving them (use --force to replace)"
+        return 0
+    fi
+
+    service_tmp="$(mktemp "$SYSTEMD_DIR/.github-backup.service.XXXXXX")" || die "Could not stage service unit"
+    timer_tmp="$(mktemp "$SYSTEMD_DIR/.github-backup.timer.XXXXXX")" || { rm -f "$service_tmp"; die "Could not stage timer unit"; }
+
+    if ! printf '%s\n' \
+        '[Unit]' \
+        'Description=Mirror GitHub repositories locally' \
+        'After=network-online.target' \
+        'Wants=network-online.target' \
+        '' \
+        '[Service]' \
+        'Type=oneshot' \
+        "EnvironmentFile=-$DEFAULTS_FILE" \
+        "ExecStart=$INSTALL_PATH sync" \
+        'NoNewPrivileges=true' \
+        'PrivateTmp=true' > "$service_tmp"; then
+        rm -f "$service_tmp" "$timer_tmp"
+        die "Could not write staged service unit"
+    fi
+
+    if ! printf '%s\n' \
+        '[Unit]' \
+        'Description=Nightly GitHub repository backup' \
+        '' \
+        '[Timer]' \
+        "Unit=$SERVICE_NAME" \
+        "OnCalendar=$SCHEDULE" \
+        'Persistent=true' \
+        'RandomizedDelaySec=30m' \
+        '' \
+        '[Install]' \
+        'WantedBy=timers.target' > "$timer_tmp"; then
+        rm -f "$service_tmp" "$timer_tmp"
+        die "Could not write staged timer unit"
+    fi
+
+    chmod 0644 "$service_tmp" "$timer_tmp" || { rm -f "$service_tmp" "$timer_tmp"; die "Could not set unit permissions"; }
+    mv -f "$service_tmp" "$service" || { rm -f "$service_tmp" "$timer_tmp"; die "Could not install service unit"; }
+    mv -f "$timer_tmp" "$timer" || { rm -f "$timer_tmp"; die "Could not install timer unit"; }
+    ok "Installed systemd units in $SYSTEMD_DIR"
+}
+
+prepare_base_dir() {
+    if [[ -d "$BASE_DIR" ]]; then
+        ok "Base directory ready: $BASE_DIR"
+        return 0
+    fi
+    if [[ -e "$BASE_DIR" || -L "$BASE_DIR" ]]; then
+        die "Base directory path exists and is not a directory: $BASE_DIR"
+    fi
+    mkdir -p "$BASE_DIR" || die "Could not create base directory: $BASE_DIR"
+    ok "Prepared base directory: $BASE_DIR"
+}
+
+prepare_log_file() {
+    local directory
+    directory="$(dirname "$LOG_FILE")"
+    if [[ -d "$LOG_FILE" ]]; then
+        die "Log path is a directory: $LOG_FILE"
+    fi
+    if ! mkdir -p "$directory" 2>/dev/null; then
+        warn "Could not create log directory: $directory"
+        return 0
+    fi
+    if [[ ! -e "$LOG_FILE" ]]; then
+        if ! touch "$LOG_FILE" 2>/dev/null; then
+            warn "Could not create log file: $LOG_FILE"
+            return 0
+        fi
+        if [[ "$(id -u)" -eq 0 ]]; then
+            chmod 0640 "$LOG_FILE" || true
+        fi
+    fi
+}
+
+cmd_setup() {
+    require_root "$DEFAULTS_FILE" "$SYSTEMD_DIR" "$(dirname "$LOG_FILE")"
+    prepare_base_dir
+    prepare_log_file
+    write_defaults_file
+    if [[ "$INSTALL_SYSTEMD" -eq 0 ]]; then
+        info "Skipping systemd service and timer (--no-systemd)."
+        return 0
+    fi
+    write_systemd_units
+    if systemd_control_available; then
+        run_systemctl daemon-reload || die "systemctl daemon-reload failed"
+    fi
+    info "Setup complete. Arm the schedule with: $PROGRAM enable"
+}
+
+cmd_enable() {
+    require_root "$SYSTEMD_DIR"
+    has_systemd || die "systemd not detected; enable is not available."
+    require_units
+    run_systemctl daemon-reload || die "systemctl daemon-reload failed"
+    run_systemctl enable --now "$TIMER_NAME" || die "Could not enable $TIMER_NAME"
+    ok "Enabled $TIMER_NAME"
+}
+
+cmd_disable() {
+    require_root "$SYSTEMD_DIR"
+    has_systemd || die "systemd not detected; disable is not available."
+    require_units
+    run_systemctl disable --now "$TIMER_NAME" || die "Could not disable $TIMER_NAME"
+    ok "Disabled $TIMER_NAME"
+}
+
+cmd_start() {
+    require_root "$SYSTEMD_DIR"
+    has_systemd || die "systemd not detected; start is not available."
+    require_units
+    run_systemctl start "$SERVICE_NAME" || die "Could not start $SERVICE_NAME"
+    ok "Started $SERVICE_NAME"
+}
+
+cmd_stop() {
+    require_root "$SYSTEMD_DIR"
+    has_systemd || die "systemd not detected; stop is not available."
+    require_units
+    run_systemctl stop "$SERVICE_NAME" || die "Could not stop $SERVICE_NAME"
+    ok "Stopped $SERVICE_NAME"
+}
+
+cmd_restart() {
+    require_root "$SYSTEMD_DIR"
+    has_systemd || die "systemd not detected; restart is not available."
+    require_units
+    run_systemctl restart "$SERVICE_NAME" || die "Could not restart $SERVICE_NAME"
+    ok "Restarted $SERVICE_NAME"
+}
+
+cmd_is_enabled() {
+    require_root "$SYSTEMD_DIR"
+    has_systemd || die "systemd not detected; is-enabled is not available."
+    require_units
+    if "$SYSTEMCTL_BIN" is-enabled "$TIMER_NAME" >/dev/null 2>&1; then
+        [[ "$QUIET" -eq 1 ]] || printf '%s\n' enabled
+        exit 0
+    fi
+    [[ "$QUIET" -eq 1 ]] || printf '%s\n' disabled
+    exit 1
+}
+
+cmd_is_active() {
+    require_root "$SYSTEMD_DIR"
+    has_systemd || die "systemd not detected; is-active is not available."
+    require_units
+    if "$SYSTEMCTL_BIN" is-active "$TIMER_NAME" >/dev/null 2>&1; then
+        [[ "$QUIET" -eq 1 ]] || printf '%s\n' active
+        exit 0
+    fi
+    [[ "$QUIET" -eq 1 ]] || printf '%s\n' inactive
+    exit 1
+}
+
+cmd_status() {
+    local rc=0
+    require_root "$SYSTEMD_DIR"
+    has_systemd || die "systemd not detected; status is not available."
+    require_units
+    run_systemctl --no-pager status "$TIMER_NAME" || rc=$?
+    run_systemctl --no-pager status "$SERVICE_NAME" || true
+    return "$rc"
+}
+
+cmd_journal() {
+    require_root "$SYSTEMD_DIR"
+    has_systemd || die "systemd not detected; journal is not available."
+    require_units
+    have_cmd journalctl || die "journalctl is not installed."
+    exec journalctl -u "$SERVICE_NAME" -f
+}
 
 cmd_install() {
-  local src dest
-  src="$(self_path)"
-  dest="$INSTALL_PATH"
+    local src="" dest=""
+    if [[ "$UNINSTALL_COMPLETION" -eq 1 ]]; then
+        uninstall_completion
+        return 0
+    fi
+    if [[ "$COMPLETION_ONLY" -eq 1 ]]; then
+        install_completion
+        return 0
+    fi
 
-  if [[ -e "$dest" && "$FORCE" -ne 1 ]]; then
-    die "$dest already exists. Re-run with --force to overwrite."
-  fi
+    src="$(self_path)"
+    dest="$INSTALL_PATH"
+    require_root "$dest"
+    [[ -f "$src" ]] || die "Cannot locate script file to install (source: $src)."
+    if [[ -e "$dest" && "$FORCE" -ne 1 ]]; then
+        die "$dest already exists. Re-run with --force to overwrite."
+    fi
+    mkdir -p "$(dirname "$dest")" || die "Could not create install directory"
+    info "Installing $src → $dest"
+    install_binary "$src" "$dest" || die "Failed to install $dest"
+    ok "Installed binary: $dest"
 
-  log_msg "Installing $src → $dest"
-  install -m 0755 -o root -g root "$src" "$dest"
-  ok "Installed binary: $dest"
-
-  # Install bash completion if bash is available
-  if command -v bash >/dev/null 2>&1; then
-    # Detect completion directory
-    if [[ -d /usr/share/bash-completion/completions ]]; then
-      comp_dir="/usr/share/bash-completion/completions"
-    elif [[ -d /etc/bash_completion.d ]]; then
-      comp_dir="/etc/bash_completion.d"
+    if [[ "$NO_COMPLETION" -eq 0 ]]; then
+        install_completion
     else
-      warn "No bash-completion directory found; skipping completion install"
+        info "Skipping completion installation (--no-completion)."
     fi
+    info "Installation complete. Try: $PROGRAM --version"
+    info "Prepare backups with: $PROGRAM setup --base-dir DIR"
+}
 
-    if [[ -n "$comp_dir" ]]; then
-      comp_file="$comp_dir/github-backup"
-      if [[ -e "$comp_file" && "$FORCE" -ne 1 ]]; then
-        die "Completion already exists at $comp_file (use --force to overwrite)."
-      fi
-      log_msg "Installing bash completion → $comp_file"
-      # Simple completion: just list the main options
-      echo "# github-backup bash completion" > "$comp_file"
-      echo "_complete_github_backup() {" >> "$comp_file"
-      echo "    local cur prev opts" >> "$comp_file"
-      echo "    COMPREPLY=()" >> "$comp_file"
-      echo "    cur=\"${COMP_WORDS[COMP_CWORD]}\"" >> "$comp_file"
-      echo "    prev=\"${COMP_WORDS[COMP_CWORD-1]}\"" >> "$comp_file"
-      echo "    opts=\"--base-dir --dry-run --verbose --debug --skip --skip-list --profile --list-repos --install --update --uninstall\"" >> "$comp_file"
-      echo "    COMPREPLY=( \$(compgen -W \"\$opts\" -- \"\$cur\") )" >> "$comp_file"
-      echo "}" >> "$comp_file"
-      echo "complete -F _complete_github_backup github-backup" >> "$comp_file"
-      ok "Bash completion installed → $comp_file"
+download_update_source() {
+    local dest="$1"
+    if have_cmd curl; then
+        curl -fsSL "$UPDATE_URL" -o "$dest" || return 1
+        return 0
     fi
-  fi
-
-  log_msg "Installation complete. Try: github-backup --help"
+    if have_cmd wget; then
+        wget -qO "$dest" "$UPDATE_URL" || return 1
+        return 0
+    fi
+    die "Neither curl nor wget is installed. Install one of them to use update."
 }
 
 cmd_update() {
-  local tmp
-  tmp="$(mktemp "${TMPDIR:-/tmp}/github-backup-update.XXXXXX")"
-  trap 'rm -f "$tmp"' RETURN
-
-  log_msg "Downloading latest github-backup from GitHub"
-  # Download using curl or wget
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "https://raw.githubusercontent.com/peternickol/github-backup/main/github-backup.sh" -o "$tmp" || die "Failed to download update"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$tmp" "https://raw.githubusercontent.com/peternickol/github-backup/main/github-backup.sh" || die "Failed to download update"
-  else
-    die "Neither curl nor wget is installed. Install one of them to use update."
-  fi
-
-  [[ -s "$tmp" ]] || die "Downloaded update is empty."
-  bash -n "$tmp" || die "Downloaded update failed syntax check."
-
-  log_msg "Installing update → $INSTALL_PATH"
-  install -m 0755 -o root -g root "$tmp" "$INSTALL_PATH"
-  ok "Updated binary: $INSTALL_PATH"
-
-  log_msg "Update complete. Try: github-backup --help"
+    require_root "$INSTALL_PATH"
+    local temporary=""
+    temporary="$(mktemp "${TMPDIR:-/tmp}/github-backup.update.XXXXXX")" || die "Could not create temporary file"
+    # shellcheck disable=SC2064
+    trap "rm -f '$temporary'" RETURN
+    info "Downloading latest github-backup from $UPDATE_URL"
+    download_update_source "$temporary" || { rm -f "$temporary"; die "Download failed"; }
+    [[ -s "$temporary" ]] || { rm -f "$temporary"; die "Downloaded update is empty."; }
+    bash -n "$temporary" || { rm -f "$temporary"; die "Downloaded script failed syntax validation"; }
+    info "Installing update → $INSTALL_PATH"
+    install_binary "$temporary" "$INSTALL_PATH" || { rm -f "$temporary"; die "Update install failed"; }
+    rm -f "$temporary"
+    ok "Updated binary: $INSTALL_PATH"
+    if [[ "$NO_COMPLETION" -eq 0 ]]; then
+        FORCE=1
+        install_completion
+    else
+        info "Skipping completion installation (--no-completion)."
+    fi
+    info "Update complete. Try: $PROGRAM --version"
 }
 
 cmd_uninstall() {
-  local dest="$INSTALL_PATH"
-
-  if [[ ! -e "$dest" ]]; then
-    warn "Not installed: $dest does not exist."
-    exit 0
-  fi
-
-  log_msg "Removing $dest"
-  rm -f "$dest"
-  ok "Removed: $dest"
-
-  # Also remove completion if it exists
-  if [[ -e /usr/share/bash-completion/completions/github-backup ]]; then
-    rm -f /usr/share/bash-completion/completions/github-backup
-    ok "Removed bash completion"
-  fi
-  if [[ -e /etc/bash_completion.d/github-backup ]]; then
-    rm -f /etc/bash_completion.d/github-backup
-    ok "Removed bash completion"
-  fi
+    local completion_dir=""
+    require_root "$INSTALL_PATH" "$SYSTEMD_DIR" "$DEFAULTS_FILE"
+    if systemd_control_available; then
+        "$SYSTEMCTL_BIN" disable --now "$TIMER_NAME" >/dev/null 2>&1 || true
+    fi
+    rm -f "$SYSTEMD_DIR/$SERVICE_NAME" "$SYSTEMD_DIR/$TIMER_NAME"
+    if systemd_control_available; then
+        run_systemctl daemon-reload || die "systemctl daemon-reload failed after uninstall"
+    fi
+    if [[ -e "$INSTALL_PATH" ]]; then
+        rm -f "$INSTALL_PATH"
+        ok "Removed: $INSTALL_PATH"
+    else
+        warn "Not installed: $INSTALL_PATH does not exist."
+    fi
+    completion_dir="$(detect_completion_dir 2>/dev/null || true)"
+    if [[ -n "$completion_dir" && -e "$completion_dir/github-backup" ]]; then
+        rm -f "$completion_dir/github-backup"
+        ok "Bash completion removed."
+    fi
+    if [[ "$PURGE_CONFIG" -eq 1 ]]; then
+        rm -f "$DEFAULTS_FILE"
+        ok "Removed configuration: $DEFAULTS_FILE"
+    fi
+    ok "Uninstalled github-backup"
 }
 
-# ── Parse command-line flags ──────────────────────────────────────────────────
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --base-dir)
-      BASE_DIR="$2"; shift 2;;
-    --dry-run) DRY_RUN=1; shift;;
-    --verbose) VERBOSE=1; shift;;
-    --debug) DEBUG=1; shift;;
-    --skip)
-      SKIP_LIST+=("$2"); shift 2;;
-    --skip-list)
-      SKIP_LIST_STR="$2"; shift 2;;
-    --profile)
-      PROFILE_USERNAME="$2"; shift 2;;
-    --list-repos)
-      LIST_USERNAME="$2"; shift 2;;
-    --install) cmd_install; exit 0;;
-    --update) cmd_update; exit 0;;
-    --uninstall) cmd_uninstall; exit 0;;
-    --help|-h)
-      echo "Usage: github-backup [--base-dir DIR] [--dry-run] [--verbose] [--debug] [--profile USER] [--list-repos USER] [--install] [--update] [--uninstall]"
-      echo ""
-      echo "Management commands:"
-      echo "  --install      Install script to /usr/local/bin/github-backup"
-      echo "  --update       Download latest and reinstall"
-      echo "  --uninstall    Remove installed script from /usr/local/bin/github-backup"
-      echo ""
-      echo "Profile commands:"
-      echo "  --profile USER   Download all repos from GitHub user USER"
-      echo "  --list-repos USER List repos from GitHub user USER"
-      echo ""
-      echo "Full options:"
-      echo "  --base-dir DIR       Base directory to search (default: /root)"
-      echo "  --dry-run            Report repos without pulling"
-      echo "  --verbose            Print each repo as it's processed"
-      echo "  --debug              Print debug information (repo paths, git urls)"
-      echo "  --skip REPO          Skip a specific repo name/dir"
-      echo "  --skip-list LIST   Comma-separated list of repos to skip"
-      echo "  --profile USER   Download all repos from GitHub user USER"
-      echo "  --list-repos USER List repos from GitHub user USER"
-      echo "  --help/-h          Show this help message"
-      exit 0;;
-    *)
-      echo "Unknown option: $1" >&2; exit 1;;
-  esac
-done
+main() {
+    apply_config
+    parse_args "$@"
+    case "$COMMAND" in
+        sync) sync_tree; finish_backup ;;
+        profile)
+            [[ -n "$PROFILE_USERNAME" ]] || die "profile requires a GitHub user or organization."
+            sync_profile "$PROFILE_USERNAME"
+            finish_backup
+            ;;
+        list-repos)
+            [[ -n "$LIST_USERNAME" ]] || die "list-repos requires a GitHub user or organization."
+            list_profile_repositories "$LIST_USERNAME"
+            ;;
+        setup) cmd_setup ;;
+        install) cmd_install ;;
+        update) cmd_update ;;
+        uninstall) cmd_uninstall ;;
+        enable) cmd_enable ;;
+        disable) cmd_disable ;;
+        start) cmd_start ;;
+        stop) cmd_stop ;;
+        restart) cmd_restart ;;
+        is-enabled) cmd_is_enabled ;;
+        is-active) cmd_is_active ;;
+        status) cmd_status ;;
+        journal) cmd_journal ;;
+        *) die "Unknown command: $COMMAND" ;;
+    esac
+}
 
-# Parse skip-list from env var
-if [[ -n "$SKIP_LIST_STR" ]]; then
-  IFS=',' read -ra SKIP_LIST <<< "$SKIP_LIST_STR"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
 fi
-
-# Ensure log directory exists
-LOG_DIR="$(dirname "$LOG_FILE")"
-mkdir -p "$LOG_DIR"
-
-# Clear/initialize log
-: > "$LOG_FILE"
-log_msg "=== GitHub Backup Job Started ==="
-log_msg "Base directory: $BASE_DIR"
-log_msg "Dry run: $DRY_RUN"
-[[ $VERBOSE -eq 1 ]] && log_msg "Verbose mode enabled"
-
-# Handle profile download or list repos
-if [[ -n "$PROFILE_USERNAME" ]]; then
-  # Download all repos from GitHub user
-  github_list_repos "$PROFILE_USERNAME" "$BASE_DIR"
-  exit 0
-fi
-
-if [[ -n "$LIST_USERNAME" ]]; then
-  # List repos from GitHub user
-  github_list_repos "$LIST_USERNAME"
-  exit 0
-fi
-
-# Find all .git directories under BASE_DIR
-local_git_dirs=()
-while IFS= read -r -d '' gitdir; do
-  local_git_dirs+=("$gitdir")
-done < <(find "$BASE_DIR" -type d -name '.git' -print0 2>/dev/null | sort -z)
-
-[[ $DEBUG -eq 1 ]] && echo "Found ${#local_git_dirs[@]} .git directories under $BASE_DIR"
-log_msg "Found ${#local_git_dirs[@]} .git directories under $BASE_DIR"
-
-# Process each git repo
-pulled_count=0
-skipped_count=0
-failed_count=0
-
-for gitdir in "${local_git_dirs[@]}"; do
-  # repo_dir is the parent of .git
-  repo_dir="$(dirname "$gitdir")"
-
-  # Get repo name from directory path
-  repo_name="$(basename "$repo_dir")"
-
-  # Skip if in skip list
-  if is_skipped "$repo_name"; then
-    [[ $DEBUG -eq 1 ]] && echo "Skipping (on skip list): $repo_name"
-    ((skipped_count++))
-    continue
-  fi
-
-  # Attempt git pull
-  if git_pull_repo "$repo_dir"; then
-    ((pulled_count++))
-  else
-    ((failed_count++))
-  fi
-done
-
-# Summary
-log_msg "=== GitHub Backup Job Finished ==="
-log_msg "Pulled: $pulled_count"
-log_msg "Skipped: $skipped_count"
-log_msg "Failed: $failed_count"
-
-[[ $VERBOSE -eq 1 ]] || echo ""
-echo "=== GitHub Backup Summary ==="
-echo "Base directory: $BASE_DIR"
-echo "Pulled: $pulled_count"
-echo "Skipped: $skipped_count"
-echo "Failed: $failed_count"
-echo "Log file: $LOG_FILE"
-
-if [[ -n "$EMAIL_TO" ]] && [[ $pulled_count -gt 0 ]]; then
-  log_msg "GitHub Backup Completed: Pulled: $pulled_count, Skipped: $skipped_count, Failed: $failed_count"
-fi
-
-exit 0
