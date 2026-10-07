@@ -6,7 +6,7 @@ at a user or organization and it also clones repositories that are not on disk
 yet.
 
 The installed command is `/usr/local/bin/github-backup`. With no arguments it
-runs `sync`.
+prints help and exits. A backup is `github-backup sync`.
 
 ```bash
 curl -fsSL \
@@ -88,7 +88,7 @@ issues, releases, and Git LFS objects are not downloaded.
 | `is-active` | Report whether the timer is active. |
 | `status` | Show the timer, then the service. |
 | `journal` | Follow the service journal. |
-| `--version`, `-V` | Print `github-backup 1.2.0`. |
+| `--version`, `-V` | Print `github-backup 1.2.1`. |
 | `--help`, `-h` | Print every command, every option, and the examples. |
 
 ### `sync`
@@ -96,7 +96,6 @@ issues, releases, and Git LFS objects are not downloaded.
 Crawl a directory and update each top-level GitHub checkout.
 
 ```bash
-github-backup
 github-backup sync
 github-backup sync --base-dir ~/src
 github-backup sync --base-dir ~/src --dry-run --verbose
@@ -115,6 +114,15 @@ The crawl does not follow directory symlinks. `git fetch --prune` drops
 remote-tracking branches that GitHub has deleted. Local branches are kept.
 Ignored files do not count as local work, and a normal fast-forward leaves
 them in place.
+
+`--dry-run` reads the remote-tracking branch already stored in the checkout.
+It does not fetch, merge, reset, or move `HEAD`. An up-to-date repository is
+omitted unless you pass `--verbose`. Anything else is one line:
+
+```text
+Skipping frostonix-portal: 5 commits ahead of origin/master
+dish: would fast-forward 2 commits to origin/master
+```
 
 `sync` takes `$BASE_DIR/.github-backup.lock`, including `--dry-run`. A second
 run for the same directory exits `1` with `Another github-backup is already
@@ -393,7 +401,10 @@ github-backup --help
 github-backup -h
 ```
 
-`--version` prints `github-backup 1.2.0`.
+`--version` prints `github-backup 1.2.1`. Running `github-backup` with no
+arguments prints the same text as `--help` and exits `0`. An unknown argument,
+or an option with no value, prints the error and then the same help, and
+exits `1`.
 
 ## Options
 
@@ -404,7 +415,7 @@ github-backup -h
 | `--list-repos USER` | anywhere | Switch this run to `list-repos`. |
 | `--skip REPO` | `sync`, `profile` | Skip one repository directory name. Repeat the flag to skip more than one. Names are added to the configured list. Matching is exact. |
 | `--skip-list A,B,C` | `sync`, `profile`, `setup` | Skip a comma-separated list. Spaces around names are removed. This replaces the configured list for this run. On `setup --force`, it also replaces the saved list. |
-| `--dry-run` | `sync`, `profile` | Print the plan. Do not fetch, clone, reset, or move `HEAD`. `sync` still requires the base directory and takes the lock. |
+| `--dry-run` | `sync`, `profile` | Print what would change using the remote-tracking branch already on disk. Do not fetch, merge, clone, reset, or move `HEAD`. Up-to-date repositories are omitted unless `--verbose` is set. `sync` still requires the base directory and takes the lock. |
 | `--verbose` | `sync`, `profile`, `list-repos` | Also print repositories that are already current. Updates, clones, skips, and failures print either way. For `list-repos`, add `public` or `private`. |
 | `--debug` | `sync`, `profile` | Print `Fetching REMOTE for REPO` on stderr. This still prints when `--quiet` is set. |
 | `--quiet`, `-q` | any command | Hide `[INFO]`, `[OK]`, and `[WARN]`, including skip lines and the summary. Errors still print. The log file is still written. One warning still prints if the log cannot be written. See [Messages](#messages). |

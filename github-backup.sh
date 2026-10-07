@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-VERSION="1.2.0"
+VERSION="1.2.1"
 PROGRAM="github-backup"
 INSTALL_PATH="${GITHUB_BACKUP_INSTALL_PATH:-/usr/local/bin/github-backup}"
 UPDATE_URL="${GITHUB_BACKUP_UPDATE_URL:-https://raw.githubusercontent.com/peternickol/github-backup/master/github-backup.sh}"
@@ -108,7 +108,10 @@ log_message() {
 need_value() {
     local option="$1"
     local value="${2:-}"
-    [[ -n "$value" && "$value" != -* ]] || die "$option requires a value."
+    if [[ -z "$value" || "$value" == -* ]]; then
+        error "$option requires a value."
+        usage 1
+    fi
 }
 
 require_root() {
@@ -139,9 +142,11 @@ trim() {
 }
 
 usage() {
+    local code="${1:-0}"
     cat <<EOF
 Usage:
-  $PROGRAM [sync] [options]
+  $PROGRAM
+  $PROGRAM sync [options]
   $PROGRAM profile USER [options]
   $PROGRAM list-repos USER [options]
   $PROGRAM setup [options]
@@ -178,7 +183,7 @@ Repository options:
   --list-repos USER        Run list-repos for USER
   --skip REPO              Skip one repository name (repeatable, exact match)
   --skip-list A,B,C        Skip comma-separated names. Replaces the saved list.
-  --dry-run                Show actions without fetching, cloning, or changing refs
+  --dry-run                Show what the recorded upstream would do. Does not fetch or merge
   --verbose                Also print repositories that are already current.
                            For list-repos, add a public or private column.
   --debug                  Print each fetch target on stderr, even with --quiet
@@ -224,7 +229,11 @@ The exit status stays. journal still follows the log.
 Nested checkouts and submodules are left alone. Clean branches behind GitHub
 are fast-forwarded. Dirty, ahead, and diverged branches are skipped.
 
+With no arguments, this help is printed and nothing is backed up.
+The backup command is: $PROGRAM sync
+
 Examples:
+  github-backup
   github-backup sync --base-dir ~/src --dry-run --verbose
   github-backup sync --base-dir ~/src --skip repo-one --skip-list repo-two,repo-three
   github-backup sync --base-dir ~/src --force-fast-forward --dry-run
@@ -252,7 +261,7 @@ Examples:
   sudo github-backup uninstall --purge-config
   github-backup --version
 EOF
-    exit 0
+    exit "$code"
 }
 
 unquote_value() {
@@ -412,7 +421,7 @@ parse_args() {
             --purge-config) PURGE_CONFIG=1; shift ;;
             -V|--version) printf '%s %s\n' "$PROGRAM" "$VERSION"; exit 0 ;;
             -h|--help) usage ;;
-            *) die "Unknown argument: $1" ;;
+            *) error "Unknown argument: $1"; usage 1 ;;
         esac
     done
 
@@ -538,9 +547,41 @@ acquire_lock() {
     LOCK_ACQUIRED=1
 }
 
+commit_phrase() {
+    local count="$1"
+    if [[ "$count" -eq 1 ]]; then
+        printf '1 commit'
+    else
+        printf '%s commits' "$count"
+    fi
+}
+
+read_upstream_tip() {
+    local repo="$1"
+    local remote="$2"
+    local upstream="$3"
+    local output="" oid=""
+    UPSTREAM_TIP=""
+    FETCH_ERROR=""
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        oid="$(git -C "$repo" rev-parse "${upstream}^{commit}" 2>/dev/null || true)"
+    else
+        debug "Fetching $remote for $repo"
+        if ! output="$(git_with_auth -C "$repo" fetch --prune "$remote" 2>&1)"; then
+            FETCH_ERROR="${output%%$'\n'*}"
+            return 1
+        fi
+        oid="$(git -C "$repo" rev-parse "${upstream}^{commit}" 2>/dev/null || true)"
+    fi
+    if [[ -z "$oid" ]]; then
+        return 1
+    fi
+    UPSTREAM_TIP="$oid"
+}
+
 sync_repo() {
     local repo="$1"
-    local name branch upstream remote remote_url local_oid upstream_oid base output
+    local name branch upstream remote remote_url local_oid upstream_oid output ahead behind
     name="$(basename "$repo")"
 
     if is_skipped "$name"; then
@@ -590,33 +631,32 @@ sync_repo() {
         return 0
     fi
 
-    if [[ "$DRY_RUN" -eq 1 ]]; then
-        if [[ "$FORCE_FAST_FORWARD" -eq 1 ]]; then
-            info "[DRY-RUN] Would fetch and destructively reset $name to $upstream"
-        else
-            info "[DRY-RUN] Would fetch $name and fast-forward only if clean and behind"
-        fi
-        return 0
-    fi
-
-    debug "Fetching $remote for $repo"
-    if ! output="$(git_with_auth -C "$repo" fetch --prune "$remote" 2>&1)"; then
-        record_failure "$repo" "fetch failed: $output"
-        return 0
-    fi
-
     local_oid="$(git -C "$repo" rev-parse 'HEAD^{commit}' 2>/dev/null || true)"
-    upstream_oid="$(git -C "$repo" rev-parse "$upstream^{commit}" 2>/dev/null || true)"
-    if [[ -z "$local_oid" || -z "$upstream_oid" ]]; then
+    if [[ -z "$local_oid" ]]; then
         record_failure "$repo" "could not resolve local or upstream commit"
         return 0
     fi
+    if ! read_upstream_tip "$repo" "$remote" "$upstream"; then
+        if [[ -n "$FETCH_ERROR" ]]; then
+            record_failure "$repo" "fetch failed: $FETCH_ERROR"
+        else
+            record_failure "$repo" "could not resolve local or upstream commit"
+        fi
+        return 0
+    fi
+    upstream_oid="$UPSTREAM_TIP"
 
     if [[ "$FORCE_FAST_FORWARD" -eq 1 ]]; then
         if [[ "$local_oid" == "$upstream_oid" ]] && ! repo_is_dirty "$repo"; then
             unchanged_count=$((unchanged_count + 1))
-            [[ "$VERBOSE" -eq 1 ]] && ok "$name already current"
-            log_message OK "$repo already current"
+            [[ "$VERBOSE" -eq 1 ]] && ok "$name: up to date"
+            log_message OK "$repo up to date"
+            return 0
+        fi
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+            info "$name: would reset to $upstream and delete untracked files"
+            updated_count=$((updated_count + 1))
+            log_message INFO "$repo would reset to $upstream"
             return 0
         fi
         warn "Force-aligning $name to $upstream; local changes and local-only commits will be discarded"
@@ -641,24 +681,31 @@ sync_repo() {
 
     if [[ "$local_oid" == "$upstream_oid" ]]; then
         unchanged_count=$((unchanged_count + 1))
-        [[ "$VERBOSE" -eq 1 ]] && ok "$name already current"
-        log_message OK "$repo already current"
+        [[ "$VERBOSE" -eq 1 ]] && ok "$name: up to date"
+        log_message OK "$repo up to date"
         return 0
     fi
 
-    base="$(git -C "$repo" merge-base "$local_oid" "$upstream_oid" 2>/dev/null || true)"
-    if [[ "$base" == "$local_oid" ]]; then
+    behind="$(git -C "$repo" rev-list --count "${local_oid}..${upstream_oid}" 2>/dev/null || printf '0')"
+    ahead="$(git -C "$repo" rev-list --count "${upstream_oid}..${local_oid}" 2>/dev/null || printf '0')"
+    if [[ "$ahead" -eq 0 && "$behind" -gt 0 ]]; then
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+            info "$name: would fast-forward $(commit_phrase "$behind") to $upstream"
+            updated_count=$((updated_count + 1))
+            log_message INFO "$repo would fast-forward $(commit_phrase "$behind") to $upstream"
+            return 0
+        fi
         if output="$(git -C "$repo" merge --ff-only "$upstream" 2>&1)"; then
             updated_count=$((updated_count + 1))
-            ok "$name fast-forwarded to $upstream"
+            ok "$name fast-forwarded $(commit_phrase "$behind") to $upstream"
             log_message OK "$repo fast-forwarded to $upstream"
         else
             record_failure "$repo" "fast-forward failed: $output"
         fi
-    elif [[ "$base" == "$upstream_oid" ]]; then
-        record_skip "$repo" "local branch is ahead of GitHub"
+    elif [[ "$behind" -eq 0 && "$ahead" -gt 0 ]]; then
+        record_skip "$repo" "$(commit_phrase "$ahead") ahead of $upstream"
     else
-        record_skip "$repo" "local branch has diverged from GitHub"
+        record_skip "$repo" "diverged from $upstream ($(commit_phrase "$ahead") ahead, $(commit_phrase "$behind") behind)"
     fi
 }
 
@@ -831,7 +878,8 @@ clone_repo() {
     fi
 
     if [[ "$DRY_RUN" -eq 1 ]]; then
-        info "[DRY-RUN] Would clone $owner/$name into $destination ($visibility)"
+        info "$owner/$name: would clone into $destination"
+        cloned_count=$((cloned_count + 1))
         return 0
     fi
 
@@ -894,7 +942,12 @@ Log: $LOG_FILE"
 }
 
 print_summary() {
-    local summary="Summary: $updated_count updated, $cloned_count cloned, $unchanged_count unchanged, $skipped_count skipped, $failed_count failed"
+    local summary
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        summary="Summary: $updated_count would update, $cloned_count would clone, $unchanged_count unchanged, $skipped_count skipped, $failed_count failed"
+    else
+        summary="Summary: $updated_count updated, $cloned_count cloned, $unchanged_count unchanged, $skipped_count skipped, $failed_count failed"
+    fi
     if [[ "$QUIET" -eq 0 ]]; then
         printf '\n%s\n' "$summary"
     fi
@@ -1370,6 +1423,9 @@ cmd_uninstall() {
 }
 
 main() {
+    if [[ $# -eq 0 ]]; then
+        usage
+    fi
     apply_config
     parse_args "$@"
     case "$COMMAND" in

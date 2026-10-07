@@ -184,7 +184,7 @@ class GitHubBackupSafetyTests(unittest.TestCase):
 
         result = self.backup("--verbose")
 
-        self.assertIn("local branch is ahead of GitHub", result.stdout)
+        self.assertIn("1 commit ahead of origin/", result.stdout)
         self.assertEqual(local_head, self.fixture.client_head())
 
     def test_force_fast_forward_aligns_to_remote_and_discards_local_work(self):
@@ -210,15 +210,33 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         ).stdout.strip()
         self.fixture.publish("remote update\n")
 
-        result = self.backup("--dry-run")
+        result = self.backup("--dry-run", "--verbose")
 
-        self.assertIn("Would fetch", result.stdout)
+        self.assertIn("up to date", result.stdout)
+        self.assertNotIn("would fast-forward", result.stdout)
+        self.assertNotIn("only if clean and behind", result.stdout)
         self.assertEqual(original_head, self.fixture.client_head())
         current_remote_tracking = run(
             "git", "rev-parse", "origin/master", cwd=self.fixture.client
         ).stdout.strip()
         self.assertEqual(original_remote_tracking, current_remote_tracking)
 
+
+    def test_dry_run_reports_a_recorded_fast_forward(self):
+        original_head = self.fixture.client_head()
+        self.fixture.publish("remote update\n")
+        run("git", "fetch", cwd=self.fixture.client)
+        tracking = run("git", "rev-parse", "origin/master", cwd=self.fixture.client).stdout.strip()
+
+        result = self.backup("--dry-run")
+
+        self.assertIn("would fast-forward 1 commit to origin/master", result.stdout)
+        self.assertNotIn("only if clean and behind", result.stdout)
+        self.assertEqual(original_head, self.fixture.client_head())
+        self.assertEqual(
+            tracking,
+            run("git", "rev-parse", "origin/master", cwd=self.fixture.client).stdout.strip(),
+        )
 
     def test_force_fast_forward_dry_run_preserves_everything(self):
         original_head = self.fixture.client_head()
@@ -231,7 +249,8 @@ class GitHubBackupSafetyTests(unittest.TestCase):
 
         result = self.backup("--force-fast-forward", "--dry-run")
 
-        self.assertIn("Would fetch and destructively reset", result.stdout)
+        self.assertIn("would reset to", result.stdout)
+        self.assertIn("delete untracked files", result.stdout)
         self.assertEqual(original_head, self.fixture.client_head())
         self.assertEqual("local work\n", tracked.read_text())
         self.assertEqual("untracked work\n", untracked.read_text())
@@ -486,7 +505,7 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
                 self.log,
                 env={"GITHUB_BACKUP_API_URL": api_url},
             )
-        self.assertIn("Would clone alice/one", result.stdout)
+        self.assertIn("alice/one: would clone into", result.stdout)
         self.assertFalse(destination.exists())
 
     def test_profile_refuses_nested_directory_inside_another_repository(self):
@@ -706,6 +725,28 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
         )
         self.assertNotEqual(0, result.returncode)
         self.assertIn("systemctl daemon-reload failed", result.stdout)
+
+
+class GitHubBackupHelpTests(unittest.TestCase):
+    def test_no_arguments_prints_help(self):
+        result = run(SCRIPT)
+        self.assertEqual(0, result.returncode)
+        self.assertIn("Usage:", result.stdout)
+        self.assertIn("profile USER", result.stdout)
+        self.assertIn("The backup command is: github-backup sync", result.stdout)
+        self.assertNotIn("[ERROR]", result.stdout)
+
+    def test_unknown_argument_prints_help_and_fails(self):
+        result = run(SCRIPT, "--not-a-real-option", check=False)
+        self.assertEqual(1, result.returncode)
+        self.assertIn("Unknown argument: --not-a-real-option", result.stdout)
+        self.assertIn("Usage:", result.stdout)
+
+    def test_missing_option_value_prints_help(self):
+        result = run(SCRIPT, "profile", check=False)
+        self.assertEqual(1, result.returncode)
+        self.assertIn("profile requires a value.", result.stdout)
+        self.assertIn("Usage:", result.stdout)
 
 
 if __name__ == "__main__":
