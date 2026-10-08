@@ -32,14 +32,12 @@
 # https://github.com/peternickol/github-backup/blob/master/README.md#configuration
 #
 # Run report
-#   The only notification is a form POST. Set the endpoint in
-#   /etc/default/github-backup:
-#     GITHUB_BACKUP_NOTIFY_URL=https://formester.com/f/yourFormId
-#   A real sync or profile submits after every run. The log names every
-#   repository and what happened to it. A fast-forward includes git's
-#   diffstat. Uncomment --notify-on-error to
-#   submit only when a repository fails or the run stops early. A dry run
-#   does not submit. Turn off reCAPTCHA.
+#   The only notification is a form POST. Uncomment --notify-url and paste
+#   the Formester endpoint. A real sync or profile submits after every run.
+#   The log names every repository and what happened to it. A fast-forward
+#   includes git's diffstat. Uncomment --notify-on-error to submit only
+#   when a repository fails or the run stops early. A dry run does not
+#   submit. Turn off reCAPTCHA.
 # https://github.com/peternickol/github-backup/blob/master/README.md#run-report
 #
 # Schedule
@@ -89,9 +87,12 @@
 # Hide info, ok, and warning lines. Errors still print.
 # --quiet
 
+# Formester endpoint. A real sync or profile submits the run report here.
+# https://github.com/peternickol/github-backup/blob/master/README.md#run-report
+# --notify-url https://formester.com/f/yourFormId
+
 # Submit the form report only when a repository fails or the run stops early.
 # The default submits after every real sync or profile.
-# https://github.com/peternickol/github-backup/blob/master/README.md#run-report
 # --notify-on-error
 
 # Reset eligible branches and delete untracked files. Leave this commented.

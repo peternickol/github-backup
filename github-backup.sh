@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.7"
+VERSION="1.4.8"
 PROGRAM="github-backup"
 INSTALL_PATH="${GITHUB_BACKUP_INSTALL_PATH:-/usr/local/bin/github-backup}"
 UPDATE_URL="${GITHUB_BACKUP_UPDATE_URL:-https://raw.githubusercontent.com/peternickol/github-backup/master/github-backup.sh}"
@@ -220,6 +220,8 @@ Repository options:
   --debug                  Print each fetch target on stderr, even with --quiet
   --quiet, -q              Hide [INFO], [OK], [WARN], skip lines, and the summary.
                            Errors still print. The log file is still written.
+  --notify-url URL         Form endpoint for the run report. Save it in the conf
+                           file. A command-line value replaces it.
   --notify-on-error        Submit the form report only when the run fails.
                            The default submits after every real sync or profile.
   --force-fast-forward     Reset a branch that has a GitHub upstream, then
@@ -276,8 +278,9 @@ Nested checkouts and submodules are left alone. Clean branches behind GitHub
 are fast-forwarded. Dirty, ahead, and diverged branches are skipped.
 
 Run report:
-  When GITHUB_BACKUP_NOTIFY_URL is an http or https form endpoint, sync and
-  profile POST one report after every real run. --notify-on-error submits
+  When --notify-url or GITHUB_BACKUP_NOTIFY_URL is an http or https form
+  endpoint, sync and profile POST one report after every real run.
+  --notify-on-error submits
   only when a repository fails or the run stops early. A dry run does not
   submit. The log names every repository and what happened to it. A
   fast-forward also shows git's diffstat: the files and how many lines
@@ -403,7 +406,7 @@ append_csv_skip() {
 
 option_takes_value() {
     case "$1" in
-        --base-dir|--profile|--list-repos|--skip|--skip-list|--log-file|--schedule|--config|--token)
+        --base-dir|--profile|--list-repos|--skip|--skip-list|--log-file|--schedule|--config|--token|--notify-url)
             return 0
             ;;
         *)
@@ -469,6 +472,10 @@ apply_saved_option() {
         --token)
             need_value "$option" "$value"
             TOKEN="$value"
+            ;;
+        --notify-url)
+            need_value "$option" "$value"
+            NOTIFY_URL="$value"
             ;;
         --dry-run|--verbose|--debug|-q|--quiet|--notify-on-error|--force-fast-forward|--force|-f|--no-completion|--completion-only|--uninstall-completion|--no-systemd|--purge-config|--install|--update|--uninstall|-V|--version|-h|--help)
             if [[ "$has_value" -eq 1 ]]; then
@@ -631,7 +638,7 @@ parse_command_line() {
             --config=*)
                 shift
                 ;;
-            --base-dir|--profile|--list-repos|--skip|--skip-list|--log-file|--schedule|--token)
+            --base-dir|--profile|--list-repos|--skip|--skip-list|--log-file|--schedule|--token|--notify-url)
                 need_value "$1" "${2:-}"
                 apply_saved_option "$1" 1 "$2"
                 shift 2
@@ -1411,7 +1418,7 @@ _github_backup() {
         prev="${COMP_WORDS[COMP_CWORD-1]}"
     fi
     local commands="sync profile list-repos setup install update uninstall enable disable start stop restart is-enabled is-active status journal"
-    local options="--base-dir --profile --list-repos --skip --skip-list --dry-run --verbose --debug --quiet --notify-on-error --force-fast-forward --log-file --schedule --config --token --no-systemd --purge-config --force --no-completion --completion-only --uninstall-completion --version --help -q -f -V -h"
+    local options="--base-dir --profile --list-repos --skip --skip-list --dry-run --verbose --debug --quiet --notify-url --notify-on-error --force-fast-forward --log-file --schedule --config --token --no-systemd --purge-config --force --no-completion --completion-only --uninstall-completion --version --help -q -f -V -h"
     if [[ "$prev" == "--base-dir" || "$prev" == "--log-file" ]]; then
         COMPREPLY=( $(compgen -d -- "$cur") )
         return 0
@@ -1589,14 +1596,12 @@ option_file_template() {
 # https://github.com/peternickol/github-backup/blob/master/README.md#configuration
 #
 # Run report
-#   The only notification is a form POST. Set the endpoint in
-#   /etc/default/github-backup:
-#     GITHUB_BACKUP_NOTIFY_URL=https://formester.com/f/yourFormId
-#   A real sync or profile submits after every run. The log names every
-#   repository and what happened to it. A fast-forward includes git's
-#   diffstat. Uncomment --notify-on-error to
-#   submit only when a repository fails or the run stops early. A dry run
-#   does not submit. Turn off reCAPTCHA.
+#   The only notification is a form POST. Uncomment --notify-url and paste
+#   the Formester endpoint. A real sync or profile submits after every run.
+#   The log names every repository and what happened to it. A fast-forward
+#   includes git's diffstat. Uncomment --notify-on-error to submit only
+#   when a repository fails or the run stops early. A dry run does not
+#   submit. Turn off reCAPTCHA.
 # https://github.com/peternickol/github-backup/blob/master/README.md#run-report
 #
 # Schedule
@@ -1646,9 +1651,12 @@ option_file_template() {
 # Hide info, ok, and warning lines. Errors still print.
 # --quiet
 
+# Formester endpoint. A real sync or profile submits the run report here.
+# https://github.com/peternickol/github-backup/blob/master/README.md#run-report
+# --notify-url https://formester.com/f/yourFormId
+
 # Submit the form report only when a repository fails or the run stops early.
 # The default submits after every real sync or profile.
-# https://github.com/peternickol/github-backup/blob/master/README.md#run-report
 # --notify-on-error
 
 # Reset eligible branches and delete untracked files. Leave this commented.

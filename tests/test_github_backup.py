@@ -385,7 +385,7 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         post = FormHandler.posts[0]
         self.assertEqual("application/json", post["accept"])
         self.assertTrue(post["content_type"].startswith("application/x-www-form-urlencoded"))
-        self.assertEqual("github-backup/1.4.7", post["user_agent"])
+        self.assertEqual("github-backup/1.4.8", post["user_agent"])
         self.assertEqual("github-backup", form_field("program"))
         self.assertEqual("ok", form_field("status"))
         self.assertIn("0 failed", form_field("summary"))
@@ -977,6 +977,7 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
         self.assertIn("--force-fast-forward", completion)
         self.assertIn("--config", completion)
         self.assertIn("--token", completion)
+        self.assertIn("--notify-url", completion)
         self.assertIn("--notify-on-error", completion)
         self.assertIn("setup", completion)
         self.assertFalse(pathlib.Path(env["GITHUB_BACKUP_DEFAULTS_FILE"]).exists())
@@ -1045,12 +1046,13 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
             "--verbose",
             "--debug",
             "--quiet",
+            "--notify-url",
             "--notify-on-error",
             "--force-fast-forward",
             "--schedule",
             "--no-systemd",
             "--purge-config",
-            "GITHUB_BACKUP_NOTIFY_URL",
+            "--notify-url https://formester.com/f/yourFormId",
             "https://github.com/peternickol/github-backup/blob/master/README.md#safety",
             "https://github.com/peternickol/github-backup/blob/master/README.md#commands",
             "https://github.com/peternickol/github-backup/blob/master/README.md#options",
@@ -1300,6 +1302,7 @@ class GitHubBackupHelpTests(unittest.TestCase):
         self.assertIn("GITHUB_BACKUP_NOTIFY_URL", result.stdout)
         self.assertIn("--config FILE", result.stdout)
         self.assertIn("--token TOKEN", result.stdout)
+        self.assertIn("--notify-url URL", result.stdout)
         self.assertIn("--notify-on-error", result.stdout)
         self.assertIn("The backup command is: github-backup sync", result.stdout)
         self.assertNotIn("[ERROR]", result.stdout)
@@ -1689,7 +1692,56 @@ class GitHubBackupConfigFileTests(unittest.TestCase):
 
         self.assertEqual(0, result.returncode)
         self.assertEqual([], FormHandler.posts)
-        self.assertNotIn("Submitted the run report.", result.stdout)
+
+    def test_notify_url_in_the_option_file_submits_the_report(self):
+        with form_server() as url:
+            self.write_config(
+                "\n".join(
+                    [
+                        f"--base-dir {self.fixture.client.parent}",
+                        f"--log-file {self.log}",
+                        f"--notify-url {url}",
+                    ]
+                )
+                + "\n"
+            )
+            result = run(
+                SCRIPT,
+                "sync",
+                "--config",
+                self.config,
+                env={"GITHUB_BACKUP_NOTIFY_URL": "http://127.0.0.1:9/from-the-environment"},
+            )
+
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertIn("Submitted the run report.", result.stdout)
+        self.assertEqual(1, len(FormHandler.posts))
+        self.assertIn("sample: up to date", form_field("log"))
+
+    def test_command_line_notify_url_replaces_the_option_file(self):
+        with form_server() as url:
+            self.write_config(
+                "\n".join(
+                    [
+                        f"--base-dir {self.fixture.client.parent}",
+                        f"--log-file {self.log}",
+                        "--notify-url http://127.0.0.1:9/from-the-file",
+                    ]
+                )
+                + "\n"
+            )
+            result = run(
+                SCRIPT,
+                "sync",
+                "--config",
+                self.config,
+                "--notify-url",
+                url,
+            )
+
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertEqual(1, len(FormHandler.posts))
+        self.assertIn("sample: up to date", form_field("log"))
 
     def test_setup_uses_the_config_file_without_copying_the_token(self):
         env = {

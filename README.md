@@ -93,7 +93,7 @@ issues, releases, and Git LFS objects are not downloaded.
 | `is-active` | Report whether the timer is active. |
 | `status` | Show the timer, then the service. |
 | `journal` | Follow the service journal. |
-| `--version`, `-V` | Print `github-backup 1.4.7`. |
+| `--version`, `-V` | Print `github-backup 1.4.8`. |
 | `--help`, `-h` | Print every command, every option, and the examples. |
 
 ### `sync`
@@ -423,7 +423,7 @@ github-backup --help
 github-backup -h
 ```
 
-`--version` prints `github-backup 1.4.7`. Running `github-backup` with no
+`--version` prints `github-backup 1.4.8`. Running `github-backup` with no
 arguments prints the same text as `--help` and exits `0`. An unknown argument,
 or an option with no value, prints the error and then the same help, and
 exits `1`.
@@ -441,6 +441,7 @@ exits `1`.
 | `--verbose` | `sync`, `profile`, `list-repos` | Also print repositories that are already current. Updates, clones, skips, and failures print either way. For `list-repos`, add `public` or `private`. |
 | `--debug` | `sync`, `profile` | Print `Fetching REMOTE for REPO` on stderr. This still prints when `--quiet` is set. |
 | `--quiet`, `-q` | any command | Hide `[INFO]`, `[OK]`, and `[WARN]`, including skip lines and the summary. Errors still print. The log file is still written. One warning still prints if the log cannot be written. See [Messages](#messages). |
+| `--notify-url URL` | `sync`, `profile` | Formester endpoint for the run report. Put it in the option file. A command-line value replaces it. |
 | `--notify-on-error` | `sync`, `profile` | Submit the form report only when a repository fails or the run stops early. The default submits after every real `sync` or `profile`. Skips alone stay a success. A dry run does not submit. |
 | `--force-fast-forward` | `sync`, `profile` | Reset eligible checkouts to the upstream commit and delete untracked files. |
 | `--log-file FILE` | `sync`, `profile`, `setup` | Log path for this run. On `setup`, also the path saved in the configuration file. Default: `/var/log/github-backup.log`. |
@@ -514,8 +515,8 @@ downloads every repository that account owns. The run uses it without
 asking again. Keep the file mode `600`, and do not commit it after the token
 is filled in. `--token` on the command line replaces the file's token, and
 the shell keeps that command in its history. `setup` does not copy `--token`
-into the defaults file. `GITHUB_BACKUP_NOTIFY_URL` stays in the environment
-or in that defaults file. The comments at the top of the option file link
+into the defaults file. `--notify-url` in the same file is the Formester
+endpoint. The comments at the top of the option file link
 to [Run report](#run-report). The token is not a field in the run report.
 
 The service runs `sync --config /etc/github-backup/github-backup.conf`.
@@ -548,7 +549,7 @@ GITHUB_BACKUP_SKIP_LIST=repo-one,repo-two
 | `GITHUB_BACKUP_BASE_DIR` | Crawl root and profile clone destination. |
 | `GITHUB_BACKUP_PROFILE` | User or organization to discover. When this is set, `sync` uses it instead of the account that owns the token. |
 | `GITHUB_BACKUP_LOG_FILE` | Log file. Each line is `YYYY-MM-DD HH:MM:SS [LEVEL] message`. |
-| `GITHUB_BACKUP_NOTIFY_URL` | Form endpoint. A real `sync` or `profile` submits a report here after every run. |
+| `GITHUB_BACKUP_NOTIFY_URL` | Form endpoint used when `--notify-url` is not set. Prefer `--notify-url` in the option file. |
 | `GITHUB_BACKUP_TOKEN` | GitHub token. Prefer `--token` in the option file. This line stays commented. |
 | `GITHUB_BACKUP_SKIP_LIST` | Comma-separated repository names to skip. |
 
@@ -639,8 +640,10 @@ file and how many lines changed, such as `src/app.py | 12 ++--` and
 `1 file changed, 4 insertions(+), 8 deletions(-)`. The same stat is printed
 on the console. `--quiet` hides it there and still sends it in the report.
 
-The URL is the secret. It is stored in `/etc/default/github-backup`, which is
-mode `600`. The GitHub token is not a form field. A POST that fails, or a URL
+The URL is the secret. Uncomment `--notify-url` in
+`/etc/github-backup/github-backup.conf` and paste the endpoint there. The
+file is mode `600`. `GITHUB_BACKUP_NOTIFY_URL` is used when that line is
+left commented. The GitHub token is not a form field. A POST that fails, or a URL
 that is not a single `http` or `https` address, prints a warning and leaves
 the backup's exit status unchanged. `--quiet` hides that warning on the
 console. The log file still records it, and the POST is still attempted.
@@ -667,9 +670,16 @@ sudo env GITHUB_BACKUP_NOTIFY_URL='https://formester.com/f/yourFormId' \
   --schedule '*-*-* 02:00:00'
 ```
 
-`setup` writes the URL when `GITHUB_BACKUP_NOTIFY_URL` is already set in the
-environment. Otherwise it leaves the commented example in the configuration
-file, and you can uncomment that line. Pass `--schedule` again with `--force`.
+Uncomment this line in the option file and paste the endpoint Formester
+gives you:
+
+```text
+--notify-url https://formester.com/f/yourFormId
+```
+
+`setup` also writes `GITHUB_BACKUP_NOTIFY_URL` into
+`/etc/default/github-backup` when that variable is already set. The option
+file replaces it. Pass `--schedule` again with `--force`.
 
 This is the report shape for the other commands on these machines. Copy the
 same field names. Change `program`, and name the variable for that command,
@@ -711,7 +721,7 @@ Run that as root so it can read the mode `600` configuration file.
 | `GITHUB_BACKUP_BASE_DIR` | `$HOME/github-backup` | Base directory. |
 | `GITHUB_BACKUP_PROFILE` | empty | User or organization `sync` uses instead of the account that owns the token. |
 | `GITHUB_BACKUP_LOG_FILE` | `/var/log/github-backup.log` | Log path. |
-| `GITHUB_BACKUP_NOTIFY_URL` | empty | Form endpoint for the run report. |
+| `GITHUB_BACKUP_NOTIFY_URL` | empty | Form endpoint used when `--notify-url` is not set. |
 | `GITHUB_BACKUP_TOKEN` | empty | GitHub token. When no profile is set, `sync` downloads the account that owns it. |
 | `GH_TOKEN` | empty | Token used when `GITHUB_BACKUP_TOKEN` is unset. |
 | `GITHUB_BACKUP_SKIP_LIST` | empty | Comma-separated names to skip. |
@@ -736,7 +746,7 @@ root when their directories are writable by you.
 |---|---|
 | `/usr/local/bin/github-backup` | The command. |
 | `/etc/default/github-backup` | Base directory, profile, log, notify URL, and skip list. Mode `600`. |
-| `/etc/github-backup/github-backup.conf` | Backup and setup options, commented, with a short note and links to this README. Uncomment a line to set it. `--token` lives here. Install options are not in this file. Mode `600`. |
+| `/etc/github-backup/github-backup.conf` | Backup and setup options, commented, with a short note and links to this README. Uncomment a line to set it. `--token` and `--notify-url` live here. Install options are not in this file. Mode `600`. |
 | `/etc/systemd/system/github-backup.service` | Oneshot service. `ExecStart` is `github-backup sync --config /etc/github-backup/github-backup.conf`, or `github-backup sync --config FILE` when setup was given `--config`. It runs as root. |
 | `/etc/systemd/system/github-backup.timer` | Calendar timer for that service. |
 | `/var/log/github-backup.log` | Default log. `setup` creates it mode `640` when run as root. |
