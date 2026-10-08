@@ -250,7 +250,8 @@ log file when it can, writes `/etc/default/github-backup` and
 units. It does not arm the timer. The option file lists each option
 commented out, with a short note. The top of the file links to the
 repository. Day to
-day, uncomment lines there. Install options stay on the command line.
+day, uncomment lines there. Install and uninstall options stay on the
+command line.
 
 ```text
 --base-dir /mnt/nas/github
@@ -352,7 +353,8 @@ sudo github-backup --uninstall
 If the command is already absent, uninstall reports that and still removes
 units and completion. The base directory, cloned repositories, and the log
 file stay either way. `--purge-config` removes `/etc/default/github-backup`
-and `/etc/github-backup/github-backup.conf`.
+and `/etc/github-backup/github-backup.conf`. Pass it on the `uninstall`
+command. It is not a line in the option file.
 
 ### `enable`
 
@@ -511,7 +513,7 @@ command-line only.
 | `--no-completion` | `install`, `update` | Do not install or refresh Bash completion. |
 | `--completion-only` | `install` | Install Bash completion and exit. |
 | `--uninstall-completion` | `install` | Remove Bash completion and exit. |
-| `--purge-config` | `uninstall` | Also remove `/etc/default/github-backup` and `/etc/github-backup/github-backup.conf`. |
+| `--purge-config` | `uninstall` | Also remove `/etc/default/github-backup` and `/etc/github-backup/github-backup.conf`. Command line only. |
 | `-V`, `--version` | anywhere | Print the version and exit. |
 | `-h`, `--help` | anywhere | Print the command summary and exit. |
 
@@ -541,8 +543,9 @@ is rejected.
 The installed file lists each option commented out, with a short note. The
 top of the file links to the repository. Commands stay
 on the command line, including `list-repos`, `--version`, `--help`, and
-`--config`. Install options (`--no-completion`, `--completion-only`,
-`--uninstall-completion`, and `--install`) stay there too.
+`--config`. Install and uninstall options (`--no-completion`,
+`--completion-only`, `--uninstall-completion`, `--install`, and
+`--purge-config`) stay there too.
 `github-backup.conf.example` is the same text. Remove the leading `# ` from a
 line to set that option:
 
@@ -811,7 +814,7 @@ root when their directories are writable by you.
 |---|---|
 | `/usr/local/bin/github-backup` | The command. |
 | `/etc/default/github-backup` | Base directory, profile, log, notify URL, and skip list. Mode `600`. |
-| `/etc/github-backup/github-backup.conf` | Each option commented out, with a short note. The top of the file links to the repository. Uncomment a line to set it. `--token` and `--notify-url` live here. Install options are not in this file. Mode `600`. |
+| `/etc/github-backup/github-backup.conf` | Each option commented out, with a short note. The top of the file links to the repository. Uncomment a line to set it. `--token` and `--notify-url` live here. Install and uninstall options are not in this file. Mode `600`. |
 | `/etc/systemd/system/github-backup.service` | Oneshot service. `ExecStart` is `github-backup sync`. It reads `/etc/github-backup/github-backup.conf` when that file exists. `setup --config FILE` uses `github-backup sync --config FILE` when `FILE` is a different path. It runs as root. |
 | `/etc/systemd/system/github-backup.timer` | Calendar timer for that service. |
 | `/var/log/github-backup.log` | Default log. `setup` creates it mode `640` when run as root. |

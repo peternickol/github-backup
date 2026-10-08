@@ -1071,7 +1071,6 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
             "--force-fast-forward",
             "--schedule",
             "--no-systemd",
-            "--purge-config",
             "--notify-url https://formester.com/f/yourFormId",
             "https://github.com/peternickol/github-backup",
         ):
@@ -1084,6 +1083,7 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
             "--install",
             "--update",
             "--uninstall",
+            "--purge-config",
             "--list-repos",
             "--config",
             "--version",

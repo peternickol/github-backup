@@ -1628,9 +1628,6 @@ option_file_template() {
 
 # On setup, replace units and rewrite the defaults file. Leave commented.
 # --force
-
-# On uninstall, also remove the defaults file and this file.
-# --purge-config
 EOF
 }
 
