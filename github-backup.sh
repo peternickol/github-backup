@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.6"
+VERSION="1.4.7"
 PROGRAM="github-backup"
 INSTALL_PATH="${GITHUB_BACKUP_INSTALL_PATH:-/usr/local/bin/github-backup}"
 UPDATE_URL="${GITHUB_BACKUP_UPDATE_URL:-https://raw.githubusercontent.com/peternickol/github-backup/master/github-backup.sh}"
@@ -1676,34 +1676,6 @@ option_file_template() {
 # Also remove /etc/default/github-backup and this option file.
 # Repositories, the base directory, and the log stay.
 # --purge-config
-
-# Command flags
-# Leave these commented. Uncommenting one would change every run,
-# including the timer. Pass them on the command line instead.
-# https://github.com/peternickol/github-backup/blob/master/README.md#commands
-
-# Switch this run to list-repos. Nothing is cloned.
-# https://github.com/peternickol/github-backup/blob/master/README.md#list-repos
-# --list-repos USER
-
-# Read a different option file and ignore this one. Do not uncomment.
-# Pass --config FILE on the command line, as with sshd -f.
-# --config FILE
-
-# Older command forms. Do not uncomment.
-# --update
-# --uninstall
-
-# Print the version, or this program's help, and exit. Do not uncomment.
-# https://github.com/peternickol/github-backup/blob/master/README.md#version-and-help
-# --version
-# --help
-
-# Short forms of --quiet, --force, --version, and --help. Do not uncomment.
-# -q
-# -f
-# -V
-# -h
 EOF
 }
 

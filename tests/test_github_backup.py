@@ -385,7 +385,7 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         post = FormHandler.posts[0]
         self.assertEqual("application/json", post["accept"])
         self.assertTrue(post["content_type"].startswith("application/x-www-form-urlencoded"))
-        self.assertEqual("github-backup/1.4.6", post["user_agent"])
+        self.assertEqual("github-backup/1.4.7", post["user_agent"])
         self.assertEqual("github-backup", form_field("program"))
         self.assertEqual("ok", form_field("status"))
         self.assertIn("0 failed", form_field("summary"))
@@ -1050,16 +1050,6 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
             "--schedule",
             "--no-systemd",
             "--purge-config",
-            "--list-repos",
-            "--config",
-            "--update",
-            "--uninstall",
-            "--version",
-            "--help",
-            "\n# -q\n",
-            "\n# -f\n",
-            "\n# -V\n",
-            "\n# -h\n",
             "GITHUB_BACKUP_NOTIFY_URL",
             "https://github.com/peternickol/github-backup/blob/master/README.md#safety",
             "https://github.com/peternickol/github-backup/blob/master/README.md#commands",
@@ -1070,9 +1060,7 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
             "https://github.com/peternickol/github-backup/blob/master/README.md#profile",
             "https://github.com/peternickol/github-backup/blob/master/README.md#setup",
             "https://github.com/peternickol/github-backup/blob/master/README.md#uninstall",
-            "https://github.com/peternickol/github-backup/blob/master/README.md#list-repos",
             "https://github.com/peternickol/github-backup/blob/master/README.md#sync",
-            "https://github.com/peternickol/github-backup/blob/master/README.md#version-and-help",
         ):
             self.assertIn(option, text)
         for option in (
@@ -1080,6 +1068,16 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
             "--completion-only",
             "--uninstall-completion",
             "--install",
+            "--update",
+            "--uninstall",
+            "--list-repos",
+            "--config",
+            "--version",
+            "--help",
+            "\n# -q\n",
+            "\n# -f\n",
+            "\n# -V\n",
+            "\n# -h\n",
             "GITHUB_BACKUP_EMAIL",
         ):
             self.assertNotIn(option, text)

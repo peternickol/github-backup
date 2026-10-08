@@ -92,7 +92,7 @@ issues, releases, and Git LFS objects are not downloaded.
 | `is-active` | Report whether the timer is active. |
 | `status` | Show the timer, then the service. |
 | `journal` | Follow the service journal. |
-| `--version`, `-V` | Print `github-backup 1.4.6`. |
+| `--version`, `-V` | Print `github-backup 1.4.7`. |
 | `--help`, `-h` | Print every command, every option, and the examples. |
 
 ### `sync`
@@ -422,7 +422,7 @@ github-backup --help
 github-backup -h
 ```
 
-`--version` prints `github-backup 1.4.6`. Running `github-backup` with no
+`--version` prints `github-backup 1.4.7`. Running `github-backup` with no
 arguments prints the same text as `--help` and exits `0`. An unknown argument,
 or an option with no value, prints the error and then the same help, and
 exits `1`.
@@ -477,10 +477,12 @@ way `sshd -f` selects another `sshd_config`. The command (`sync`, `profile`,
 is rejected.
 
 The installed file lists the backup and setup options, commented out, with a
-short note and a link to the matching section of this README. Install options
-(`--no-completion`, `--completion-only`, `--uninstall-completion`, and
-`--install`) stay on the command line. `github-backup.conf.example` is the
-same text. Remove the leading `# ` from a line to set that option:
+short note and a link to the matching section of this README. Commands stay
+on the command line, including `list-repos`, `--version`, `--help`, and
+`--config`. Install options (`--no-completion`, `--completion-only`,
+`--uninstall-completion`, and `--install`) stay there too.
+`github-backup.conf.example` is the same text. Remove the leading `# ` from a
+line to set that option:
 
 ```text
 # --token github_pat_...
