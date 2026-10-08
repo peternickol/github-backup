@@ -357,7 +357,7 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         post = FormHandler.posts[0]
         self.assertEqual("application/json", post["accept"])
         self.assertTrue(post["content_type"].startswith("application/x-www-form-urlencoded"))
-        self.assertEqual("github-backup/1.4.0", post["user_agent"])
+        self.assertEqual("github-backup/1.4.1", post["user_agent"])
         self.assertEqual("github-backup", form_field("program"))
         self.assertEqual("ok", form_field("status"))
         self.assertIn("0 failed", form_field("summary"))
@@ -797,11 +797,11 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
         self.assertIn("GITHUB_BACKUP_PROFILE=alice", defaults)
         self.assertIn(f'GITHUB_BACKUP_BASE_DIR="{destination}"', defaults)
         self.assertIn("# GITHUB_BACKUP_EMAIL=you@example.com", defaults)
-        self.assertIn("# GITHUB_BACKUP_NOTIFY_URL=https://formspree.io/f/yourFormId", defaults)
+        self.assertIn("# GITHUB_BACKUP_NOTIFY_URL=https://formester.com/f/yourFormId", defaults)
 
     def test_setup_saves_notify_url_from_the_environment(self):
         env = self.paths("notify-setup")
-        env["GITHUB_BACKUP_NOTIFY_URL"] = "https://formspree.io/f/abcxyz"
+        env["GITHUB_BACKUP_NOTIFY_URL"] = "https://formester.com/f/abcxyz"
         destination = self.root / "notify-setup" / "repos"
         run(
             SCRIPT,
@@ -817,7 +817,7 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
         defaults_file = pathlib.Path(env["GITHUB_BACKUP_DEFAULTS_FILE"])
         self.assertEqual(0o600, defaults_file.stat().st_mode & 0o777)
         self.assertIn(
-            "GITHUB_BACKUP_NOTIFY_URL=https://formspree.io/f/abcxyz",
+            "GITHUB_BACKUP_NOTIFY_URL=https://formester.com/f/abcxyz",
             defaults_file.read_text(),
         )
 

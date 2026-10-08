@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.0"
+VERSION="1.4.1"
 PROGRAM="github-backup"
 INSTALL_PATH="${GITHUB_BACKUP_INSTALL_PATH:-/usr/local/bin/github-backup}"
 UPDATE_URL="${GITHUB_BACKUP_UPDATE_URL:-https://raw.githubusercontent.com/peternickol/github-backup/master/github-backup.sh}"
@@ -1264,7 +1264,8 @@ notify_url_acceptable() {
 
 # Post one application/x-www-form-urlencoded report. Other scripts can copy
 # this request: fields are _subject, host, program, status, summary, and log.
-# Accept: application/json asks a form host such as Formspree not to redirect.
+# Accept: application/json asks the endpoint for JSON when it supports that.
+# Formester's form endpoint is one host this works with.
 submit_run_report() {
     [[ "$REPORT_SUBMITTED" -eq 0 ]] || return 0
     REPORT_SUBMITTED=1
@@ -1476,7 +1477,7 @@ write_defaults_file() {
         if [[ -n "$NOTIFY_URL" ]]; then
             write_env_assignment GITHUB_BACKUP_NOTIFY_URL "$NOTIFY_URL"
         else
-            printf '%s\n' '# GITHUB_BACKUP_NOTIFY_URL=https://formspree.io/f/yourFormId'
+            printf '%s\n' '# GITHUB_BACKUP_NOTIFY_URL=https://formester.com/f/yourFormId'
         fi
         if [[ -n "$token_line" ]]; then
             printf '%s\n' "$token_line"

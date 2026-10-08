@@ -91,7 +91,7 @@ issues, releases, and Git LFS objects are not downloaded.
 | `is-active` | Report whether the timer is active. |
 | `status` | Show the timer, then the service. |
 | `journal` | Follow the service journal. |
-| `--version`, `-V` | Print `github-backup 1.4.0`. |
+| `--version`, `-V` | Print `github-backup 1.4.1`. |
 | `--help`, `-h` | Print every command, every option, and the examples. |
 
 ### `sync`
@@ -404,7 +404,7 @@ github-backup --help
 github-backup -h
 ```
 
-`--version` prints `github-backup 1.4.0`. Running `github-backup` with no
+`--version` prints `github-backup 1.4.1`. Running `github-backup` with no
 arguments prints the same text as `--help` and exits `0`. An unknown argument,
 or an option with no value, prints the error and then the same help, and
 exits `1`.
@@ -497,7 +497,7 @@ GITHUB_BACKUP_BASE_DIR=/mnt/nas/github/YOUR_GITHUB_USERNAME
 GITHUB_BACKUP_PROFILE=YOUR_GITHUB_USERNAME
 GITHUB_BACKUP_LOG_FILE=/var/log/github-backup.log
 GITHUB_BACKUP_EMAIL=you@example.com
-GITHUB_BACKUP_NOTIFY_URL=https://formspree.io/f/yourFormId
+GITHUB_BACKUP_NOTIFY_URL=https://formester.com/f/yourFormId
 GITHUB_BACKUP_TOKEN=github_pat_REPLACE_ME
 GITHUB_BACKUP_SKIP_LIST=repo-one,repo-two
 ```
@@ -571,12 +571,14 @@ the backup's exit status unchanged. `--quiet` hides that warning on the
 console. The log file still records it, and the POST is still attempted.
 
 The body is `application/x-www-form-urlencoded`. The request sends
-`Accept: application/json`, which tells Formspree to return JSON instead of
-redirecting. Leave reCAPTCHA off. A server cannot solve it.
+`Accept: application/json`. Paste the endpoint Formester gives you, such as
+`https://formester.com/f/yourFormId`. Create the form fields with these names
+so each value shows up in the submission. Turn off reCAPTCHA and any other
+challenge on that form. A server cannot solve one.
 
 | Field | Value |
 |---|---|
-| `_subject` | One-line subject. Formspree uses this as the email subject. |
+| `_subject` | One-line subject, stored as a field of that name. |
 | `host` | Short hostname. |
 | `program` | `github-backup`. |
 | `status` | `ok` or `failed`. Skips alone stay `ok`. |
@@ -584,7 +586,7 @@ redirecting. Leave reCAPTCHA off. A server cannot solve it.
 | `log` | Skip and failure lines from this run. At most 100 lines and 32 KB. |
 
 ```bash
-sudo env GITHUB_BACKUP_NOTIFY_URL='https://formspree.io/f/yourFormId' \
+sudo env GITHUB_BACKUP_NOTIFY_URL='https://formester.com/f/yourFormId' \
   github-backup setup --force \
   --base-dir /mnt/nas/github \
   --schedule '*-*-* 02:00:00'
@@ -598,10 +600,9 @@ This is the report shape for the other commands on these machines. Copy the
 same field names. Change `program`, and name the variable for that command,
 such as `WG_MANAGER_NOTIFY_URL`. Point them at one form or at one form each.
 
-Formspree's free plan accepts 50 submissions a month for the whole account.
-One server each night is about 30. Past the cap, Formspree stores the report
-and stops emailing it. A night with no mail can also mean the timer did not
-run. The form only hears from a run that started.
+Formester stores the submission and sends whatever notification you configure
+on that form. A night with no submission can also mean the timer did not run.
+The form only hears from a run that started.
 
 ### Schedule
 
