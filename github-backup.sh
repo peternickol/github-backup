@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.9"
+VERSION="1.4.10"
 PROGRAM="github-backup"
 INSTALL_PATH="${GITHUB_BACKUP_INSTALL_PATH:-/usr/local/bin/github-backup}"
 UPDATE_URL="${GITHUB_BACKUP_UPDATE_URL:-https://raw.githubusercontent.com/peternickol/github-backup/master/github-backup.sh}"
@@ -761,8 +761,12 @@ is_nested_repository() {
 
 git_with_auth() {
     if [[ -n "$TOKEN" ]]; then
-        local auth_header
-        printf -v auth_header 'Authorization: Bearer %s' "$TOKEN"
+        local auth_header encoded=""
+        # GitHub's git HTTP endpoint rejects a Bearer token with
+        # "invalid credentials". Basic auth, user x-access-token, is accepted.
+        # The API calls keep using Bearer. The token is not written into the URL.
+        encoded="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+        printf -v auth_header 'Authorization: Basic %s' "$encoded"
         # SSH remotes ignore an HTTP header. Rewrite GitHub SSH URLs to HTTPS
         # for this command only; the remote saved in the repository stays put.
         GIT_TERMINAL_PROMPT=0 \
@@ -791,6 +795,14 @@ record_skip() {
 record_failure() {
     local repo="$1"
     local reason="$2"
+    local line="" chosen=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -n "${line//[[:space:]]/}" ]] || continue
+        if [[ -z "$chosen" || "$line" == fatal:* || "$line" == remote:* || "$line" == error:* ]]; then
+            chosen="$line"
+        fi
+    done <<< "$reason"
+    [[ -n "$chosen" ]] && reason="$chosen"
     reason="${reason%%$'\n'*}"
     failed_count=$((failed_count + 1))
     error "$(basename "$repo"): $reason"

@@ -58,8 +58,9 @@ commit, and `git clean -fd`. Local commits and untracked files are discarded.
 Ignored files and nested Git directories stay. Preview it with `--dry-run`.
 
 Profile mode never follows a symlink and never treats a nested directory as a
-clone destination. New clones use HTTPS. A token is sent in an HTTP header and
-is not written into `origin` URLs. For that one Git command, a token also
+clone destination. New clones use HTTPS. Git receives the token as HTTP Basic
+authentication, with the username `x-access-token`, and the token is not
+written into `origin` URLs. For that one Git command, a token also
 reads `git@github.com:` and `ssh://git@github.com/` as HTTPS. The remote saved
 in the checkout stays as it was. `GIT_TERMINAL_PROMPT=0` stops Git from
 waiting for a password.
@@ -93,7 +94,7 @@ issues, releases, and Git LFS objects are not downloaded.
 | `is-active` | Report whether the timer is active. |
 | `status` | Show the timer, then the service. |
 | `journal` | Follow the service journal. |
-| `--version`, `-V` | Print `github-backup 1.4.9`. |
+| `--version`, `-V` | Print `github-backup 1.4.10`. |
 | `--help`, `-h` | Print every command, every option, and the examples. |
 
 ### `sync`
@@ -423,7 +424,7 @@ github-backup --help
 github-backup -h
 ```
 
-`--version` prints `github-backup 1.4.9`. Running `github-backup` with no
+`--version` prints `github-backup 1.4.10`. Running `github-backup` with no
 arguments prints the same text as `--help` and exits `0`. An unknown argument,
 or an option with no value, prints the error and then the same help, and
 exits `1`.

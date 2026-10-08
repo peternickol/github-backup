@@ -349,7 +349,10 @@ class GitHubBackupSafetyTests(unittest.TestCase):
 
         logged = fetch_log.read_text()
         self.assertIn("GIT_CONFIG_KEY_0=http.extraHeader", logged)
-        self.assertIn("GIT_CONFIG_VALUE_0=Authorization: Bearer test-token", logged)
+        self.assertIn(
+            "GIT_CONFIG_VALUE_0=Authorization: Basic eC1hY2Nlc3MtdG9rZW46dGVzdC10b2tlbg==",
+            logged,
+        )
         self.assertIn("GIT_CONFIG_KEY_1=url.https://github.com/.insteadOf", logged)
         self.assertIn("GIT_CONFIG_VALUE_1=git@github.com:", logged)
         self.assertIn("GIT_CONFIG_VALUE_2=ssh://git@github.com/", logged)
@@ -385,7 +388,7 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         post = FormHandler.posts[0]
         self.assertEqual("application/json", post["accept"])
         self.assertTrue(post["content_type"].startswith("application/x-www-form-urlencoded"))
-        self.assertEqual("github-backup/1.4.9", post["user_agent"])
+        self.assertEqual("github-backup/1.4.10", post["user_agent"])
         self.assertEqual("github-backup", form_field("program"))
         self.assertEqual("ok", form_field("status"))
         self.assertIn("0 failed", form_field("summary"))
@@ -1638,7 +1641,10 @@ class GitHubBackupConfigFileTests(unittest.TestCase):
             env={"GITHUB_BACKUP_TOKEN": "env-token"},
         )
 
-        self.assertIn("GIT_CONFIG_VALUE_0=Authorization: Bearer file-token", logged)
+        self.assertIn(
+            "GIT_CONFIG_VALUE_0=Authorization: Basic eC1hY2Nlc3MtdG9rZW46ZmlsZS10b2tlbg==",
+            logged,
+        )
         self.assertNotIn("env-token", logged)
         self.assertEqual(self.fixture.remote_head(), self.fixture.client_head())
 
@@ -1656,7 +1662,10 @@ class GitHubBackupConfigFileTests(unittest.TestCase):
             "cli-token",
         )
 
-        self.assertIn("GIT_CONFIG_VALUE_0=Authorization: Bearer cli-token", logged)
+        self.assertIn(
+            "GIT_CONFIG_VALUE_0=Authorization: Basic eC1hY2Nlc3MtdG9rZW46Y2xpLXRva2Vu",
+            logged,
+        )
         self.assertNotIn("file-token", logged)
 
     def test_config_file_token_is_not_in_the_run_report(self):
