@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.5"
+VERSION="1.4.6"
 PROGRAM="github-backup"
 INSTALL_PATH="${GITHUB_BACKUP_INSTALL_PATH:-/usr/local/bin/github-backup}"
 UPDATE_URL="${GITHUB_BACKUP_UPDATE_URL:-https://raw.githubusercontent.com/peternickol/github-backup/master/github-backup.sh}"
@@ -187,7 +187,8 @@ Usage:
 
 Commands:
   sync                 Update GitHub working trees under the base directory.
-                       A saved profile makes sync clone and update that profile.
+                       A token downloads every repository that account owns.
+                       --profile selects a different user or organization.
   profile USER         Clone missing owned repositories and update the rest.
   list-repos USER      Print repository names. Nothing is cloned or locked.
   setup                Write configuration, the base directory, and systemd units.
@@ -208,7 +209,8 @@ Commands:
 Repository options:
   --base-dir DIR           Repository root or profile clone destination
                            (default: \$HOME/github-backup)
-  --profile USER           On sync, clone and update USER. On setup, save USER.
+  --profile USER           On sync, clone and update USER instead of the account
+                           that owns the token. On setup, save USER.
   --list-repos USER        Run list-repos for USER
   --skip REPO              Skip one repository name (repeatable, exact match)
   --skip-list A,B,C        Skip comma-separated names. Replaces the saved list.
@@ -1035,11 +1037,13 @@ validate_owner() {
 }
 
 authenticated_login() {
-    local response=""
+    local response="" quiet="${1:-0}"
     [[ -n "$TOKEN" ]] || return 0
     response="$(github_api /user 2>/dev/null || true)"
     if [[ -z "$response" ]]; then
-        warn "Could not read the authenticated GitHub login. Private repositories may be omitted."
+        if [[ "$quiet" -eq 0 ]]; then
+            warn "Could not read the authenticated GitHub login. Private repositories may be omitted."
+        fi
         return 0
     fi
     printf '%s' "$response" | python3 -c 'import json,sys
@@ -1569,17 +1573,19 @@ option_file_template() {
 # https://github.com/peternickol/github-backup/blob/master/README.md#commands
 #
 # What a run does
-#   Fast-forward clean GitHub checkouts. With --profile, also clone
-#   repositories that are not on disk yet. Dirty, ahead, diverged, and
-#   detached checkouts are skipped. --force-fast-forward is the only
-#   destructive override. Leave that line commented.
+#   Fast-forward clean GitHub checkouts. A token downloads every
+#   repository that account owns. --profile selects another account.
+#   Dirty, ahead, diverged, and detached checkouts are skipped.
+#   --force-fast-forward is the only destructive override. Leave that
+#   line commented.
 # https://github.com/peternickol/github-backup/blob/master/README.md#safety
 #
 # Token
-#   Uncomment --token and paste a GitHub token. Keep this file mode 600.
-#   Do not commit the file after the token is filled in. setup does not
-#   copy the token into /etc/default/github-backup. A token on the command
-#   line replaces this one and is kept in shell history.
+#   Uncomment --token and paste a GitHub token. sync then downloads every
+#   repository that account owns into the base directory. Keep this file
+#   mode 600. Do not commit the file after the token is filled in. setup
+#   does not copy the token into /etc/default/github-backup. A token on
+#   the command line replaces this one and is kept in shell history.
 # https://github.com/peternickol/github-backup/blob/master/README.md#configuration
 #
 # Run report
@@ -1605,7 +1611,8 @@ option_file_template() {
 # Default when commented: $HOME/github-backup
 # --base-dir /mnt/nas/github
 
-# On sync, clone and update this user or organization. On setup, save it.
+# On sync, clone and update this user or organization instead of the
+# account that owns the token. On setup, save it.
 # https://github.com/peternickol/github-backup/blob/master/README.md#profile
 # --profile YOUR_GITHUB_USERNAME
 
@@ -1622,7 +1629,7 @@ option_file_template() {
 # Log path. Default when commented: /var/log/github-backup.log
 # --log-file /var/log/github-backup.log
 
-# GitHub token for private repositories. This file is the saved credential.
+# GitHub token. With no --profile, sync downloads the account that owns it.
 # --token github_pat_...
 
 # Show what the recorded upstream would do. Does not fetch or merge.
@@ -2090,7 +2097,19 @@ main() {
     case "$COMMAND" in
         sync)
             begin_run_report
-            sync_tree
+            if [[ -n "$TOKEN" ]]; then
+                local login=""
+                login="$(authenticated_login 1)"
+                if [[ -z "$login" ]]; then
+                    die "Could not read the GitHub account for this token, so the profile was not downloaded."
+                fi
+                if ! validate_owner "$login"; then
+                    die "Invalid GitHub profile name: $login"
+                fi
+                sync_profile "$login"
+            else
+                sync_tree
+            fi
             finish_backup
             ;;
         profile)

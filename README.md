@@ -1,9 +1,9 @@
 # github-backup
 
 `github-backup` keeps local GitHub working trees current. Point it at a
-directory and it fast-forwards clean branches that are behind GitHub. Point it
-at a user or organization and it also clones repositories that are not on disk
-yet.
+directory and it fast-forwards clean branches that are behind GitHub. Give it
+a token and `sync` downloads every repository that account owns. `--profile`
+selects a different user or organization.
 
 The installed command is `/usr/local/bin/github-backup`. With no arguments it
 prints help and exits. A backup is `github-backup sync`.
@@ -24,9 +24,9 @@ sudo github-backup start
 ```
 
 `install` copies the command. `setup` prepares the machine and installs
-`/etc/github-backup/github-backup.conf`. Uncomment `--token` in that file
-before the first private backup. `enable` arms the nightly timer. `start`
-runs a backup immediately.
+`/etc/github-backup/github-backup.conf`. Uncomment `--token` in that file.
+`sync` then downloads every repository owned by that account into the base
+directory. `enable` arms the nightly timer. `start` runs a backup immediately.
 
 ## Safety
 
@@ -76,7 +76,7 @@ issues, releases, and Git LFS objects are not downloaded.
 
 | Command | What it does |
 |---|---|
-| `sync` | Update GitHub working trees under the base directory. A saved profile makes this clone as well. |
+| `sync` | Update GitHub working trees under the base directory. A token also clones every repository that account owns. |
 | `profile USER` | Clone missing owned repositories and update the ones already checked out. |
 | `list-repos USER` | Print repository names. Nothing is cloned. |
 | `setup` | Write configuration, prepare the base directory, and install systemd units. |
@@ -92,12 +92,16 @@ issues, releases, and Git LFS objects are not downloaded.
 | `is-active` | Report whether the timer is active. |
 | `status` | Show the timer, then the service. |
 | `journal` | Follow the service journal. |
-| `--version`, `-V` | Print `github-backup 1.4.5`. |
+| `--version`, `-V` | Print `github-backup 1.4.6`. |
 | `--help`, `-h` | Print every command, every option, and the examples. |
 
 ### `sync`
 
-Crawl a directory and update each top-level GitHub checkout.
+Crawl a directory and update each top-level GitHub checkout. A token, with
+no `--profile`, selects the account that owns the token and downloads every
+repository that account owns. Each repository is one directory under the base
+directory. `--profile USER` selects that user or organization instead, which
+is how an organization is downloaded.
 
 ```bash
 github-backup sync
@@ -113,7 +117,9 @@ github-backup sync --base-dir ~/src --force-fast-forward --dry-run
 github-backup sync --base-dir ~/src --force-fast-forward
 ```
 
-The base directory must already exist. The default is `$HOME/github-backup`.
+With no token and no profile, the base directory must already exist. A token
+makes a real `sync` create the base directory when it is missing. The default
+is `$HOME/github-backup`.
 The crawl does not follow directory symlinks. `git fetch --prune` drops
 remote-tracking branches that GitHub has deleted. Local branches are kept.
 Ignored files do not count as local work, and a normal fast-forward leaves
@@ -132,9 +138,10 @@ dish: would fast-forward 2 commits to origin/master
 run for the same directory exits `1` with `Another github-backup is already
 running`. The lock is released when the process exits.
 
-If `GITHUB_BACKUP_PROFILE` is set, `sync` switches to profile mode. That is
-what the systemd service runs: the unit executes `github-backup sync`, and the
-configuration file supplies the profile. The service runs as root.
+The systemd service runs `github-backup sync`. A token in the option file
+makes that run download the account that owns the token. `--profile` or
+`GITHUB_BACKUP_PROFILE` selects a different user or organization. The service
+runs as root.
 
 `--skip NAME` adds that name to the skip list from the environment or the
 defaults file. `--skip-list A,B` replaces that list for this run, and any
@@ -415,7 +422,7 @@ github-backup --help
 github-backup -h
 ```
 
-`--version` prints `github-backup 1.4.5`. Running `github-backup` with no
+`--version` prints `github-backup 1.4.6`. Running `github-backup` with no
 arguments prints the same text as `--help` and exits `0`. An unknown argument,
 or an option with no value, prints the error and then the same help, and
 exits `1`.
@@ -425,18 +432,18 @@ exits `1`.
 | Option | Use it with | What it does |
 |---|---|---|
 | `--base-dir DIR` | `sync`, `profile`, `setup` | Directory to crawl, or the directory that receives profile clones. Default: `$HOME/github-backup`. |
-| `--profile USER` | `sync`, `setup` | On `sync`, clone and update `USER`. On `setup`, store that profile for later runs. |
+| `--profile USER` | `sync`, `setup` | On `sync`, clone and update `USER` instead of the account that owns the token. On `setup`, store that profile for later runs. |
 | `--list-repos USER` | anywhere | Switch this run to `list-repos`. |
 | `--skip REPO` | `sync`, `profile` | Skip one repository directory name. Repeat the flag to skip more than one. Names are added to the list from the environment or the defaults file. Matching is exact. |
 | `--skip-list A,B,C` | `sync`, `profile`, `setup` | Skip a comma-separated list. Spaces around names are removed. This replaces the list from the environment or the defaults file for this run. On `setup --force`, it also replaces the saved list. |
-| `--dry-run` | `sync`, `profile` | Print what would change using the remote-tracking branch already on disk. Do not fetch, merge, clone, reset, or move `HEAD`. Up-to-date repositories are omitted unless `--verbose` is set. `sync` still requires the base directory and takes the lock. |
+| `--dry-run` | `sync`, `profile` | Print what would change using the remote-tracking branch already on disk. Do not fetch, merge, clone, reset, or move `HEAD`. Up-to-date repositories are omitted unless `--verbose` is set. A directory sync requires the base directory and takes the lock. A profile dry run does not create the base directory. |
 | `--verbose` | `sync`, `profile`, `list-repos` | Also print repositories that are already current. Updates, clones, skips, and failures print either way. For `list-repos`, add `public` or `private`. |
 | `--debug` | `sync`, `profile` | Print `Fetching REMOTE for REPO` on stderr. This still prints when `--quiet` is set. |
 | `--quiet`, `-q` | any command | Hide `[INFO]`, `[OK]`, and `[WARN]`, including skip lines and the summary. Errors still print. The log file is still written. One warning still prints if the log cannot be written. See [Messages](#messages). |
 | `--notify-on-error` | `sync`, `profile` | Submit the form report only when a repository fails or the run stops early. The default submits after every real `sync` or `profile`. Skips alone stay a success. A dry run does not submit. |
 | `--force-fast-forward` | `sync`, `profile` | Reset eligible checkouts to the upstream commit and delete untracked files. |
 | `--log-file FILE` | `sync`, `profile`, `setup` | Log path for this run. On `setup`, also the path saved in the configuration file. Default: `/var/log/github-backup.log`. |
-| `--token TOKEN` | any command | GitHub token for this run. Put it in the conf file so later runs do not need it again. |
+| `--token TOKEN` | any command | GitHub token. With no `--profile`, `sync` downloads every repository that account owns. Put it in the conf file so later runs do not need it again. |
 | `--config FILE` | any command | Use `FILE` instead of `/etc/github-backup/github-backup.conf`. One option per line, including `--token`. On `setup`, the service runs `sync --config FILE`. |
 | `--schedule CALENDAR` | `setup` | systemd `OnCalendar` value. Default: `*-*-* 02:00:00`. |
 | `--no-systemd` | `setup` | Write the configuration and skip unit installation. |
@@ -499,7 +506,8 @@ the file set it. A setting neither one mentions comes from the environment,
 then `/etc/default/github-backup`, then the built-in value. When the option
 file is missing, the command still runs with those later sources.
 
-`--token` in the file is the saved GitHub token. The run uses it without
+`--token` in the file is the saved GitHub token. With no `--profile`, `sync`
+downloads every repository that account owns. The run uses it without
 asking again. Keep the file mode `600`, and do not commit it after the token
 is filled in. `--token` on the command line replaces the file's token, and
 the shell keeps that command in its history. `setup` does not copy `--token`
@@ -535,7 +543,7 @@ GITHUB_BACKUP_SKIP_LIST=repo-one,repo-two
 | Key | Meaning |
 |---|---|
 | `GITHUB_BACKUP_BASE_DIR` | Crawl root and profile clone destination. |
-| `GITHUB_BACKUP_PROFILE` | User or organization to discover. When this is non-empty, `sync` runs profile mode. |
+| `GITHUB_BACKUP_PROFILE` | User or organization to discover. When this is set, `sync` uses it instead of the account that owns the token. |
 | `GITHUB_BACKUP_LOG_FILE` | Log file. Each line is `YYYY-MM-DD HH:MM:SS [LEVEL] message`. |
 | `GITHUB_BACKUP_NOTIFY_URL` | Form endpoint. A real `sync` or `profile` submits a report here after every run. |
 | `GITHUB_BACKUP_TOKEN` | GitHub token. Prefer `--token` in the option file. This line stays commented. |
@@ -557,12 +565,13 @@ in shell history or in Git.
 read -rsp 'GitHub token: ' GITHUB_BACKUP_TOKEN
 printf '\n'
 export GITHUB_BACKUP_TOKEN
-github-backup profile YOUR_GITHUB_USERNAME --base-dir /mnt/nas/github/YOUR_GITHUB_USERNAME
+github-backup sync --base-dir /mnt/nas/github
 unset GITHUB_BACKUP_TOKEN
 ```
 
 For the timer, uncomment `--token` in `/etc/github-backup/github-backup.conf`
-and paste the token there. A
+and paste the token there. `sync` downloads every repository that account
+owns. A
 fine-grained token needs **Contents: Read-only** at
 <https://github.com/settings/personal-access-tokens/new>. A classic token needs
 the `repo` scope for private repositories at
@@ -656,10 +665,10 @@ Run that as root so it can read the mode `600` configuration file.
 | Variable | Default | What it changes |
 |---|---|---|
 | `GITHUB_BACKUP_BASE_DIR` | `$HOME/github-backup` | Base directory. |
-| `GITHUB_BACKUP_PROFILE` | empty | Profile discovered by `sync`. |
+| `GITHUB_BACKUP_PROFILE` | empty | User or organization `sync` uses instead of the account that owns the token. |
 | `GITHUB_BACKUP_LOG_FILE` | `/var/log/github-backup.log` | Log path. |
 | `GITHUB_BACKUP_NOTIFY_URL` | empty | Form endpoint for the run report. |
-| `GITHUB_BACKUP_TOKEN` | empty | GitHub token. |
+| `GITHUB_BACKUP_TOKEN` | empty | GitHub token. When no profile is set, `sync` downloads the account that owns it. |
 | `GH_TOKEN` | empty | Token used when `GITHUB_BACKUP_TOKEN` is unset. |
 | `GITHUB_BACKUP_SKIP_LIST` | empty | Comma-separated names to skip. |
 | `GITHUB_BACKUP_SCHEDULE` | `*-*-* 02:00:00` | Calendar used by `setup`. |

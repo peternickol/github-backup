@@ -18,6 +18,8 @@ SCRIPT = ROOT / "github-backup.sh"
 def run(*args, cwd=None, env=None, check=True):
     merged_env = os.environ.copy()
     merged_env.pop("GITHUB_BACKUP_NOTIFY_URL", None)
+    merged_env.pop("GITHUB_BACKUP_TOKEN", None)
+    merged_env.pop("GH_TOKEN", None)
     merged_env["GITHUB_BACKUP_CONFIG"] = "/tmp/github-backup-test-no-option-file.conf"
     merged_env.update(
         {
@@ -77,6 +79,22 @@ class GitFixture:
 
     def client_head(self):
         return run("git", "rev-parse", "HEAD", cwd=self.client).stdout.strip()
+
+
+def use_profile_checkout(fixture):
+    dest = fixture.client.parent / "private-one"
+    fixture.client.rename(dest)
+    fixture.client = dest
+    url = "https://github.com/alice/private-one.git"
+    run("git", "remote", "set-url", "origin", url, cwd=dest)
+    run(
+        "git",
+        "config",
+        f"url.file://{fixture.remote}.insteadOf",
+        url,
+        cwd=dest,
+    )
+    return dest
 
 
 class GitHubBackupSafetyTests(unittest.TestCase):
@@ -318,13 +336,16 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         )
         wrapper.chmod(0o755)
 
-        self.backup(
-            env={
-                "PATH": f"{fake_bin}:{os.environ['PATH']}",
-                "GITHUB_BACKUP_TOKEN": "test-token",
-                "FETCH_LOG": str(fetch_log),
-            }
-        )
+        use_profile_checkout(self.fixture)
+        with fake_github_server() as api_url:
+            self.backup(
+                env={
+                    "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                    "GITHUB_BACKUP_TOKEN": "test-token",
+                    "GITHUB_BACKUP_API_URL": api_url,
+                    "FETCH_LOG": str(fetch_log),
+                }
+            )
 
         logged = fetch_log.read_text()
         self.assertIn("GIT_CONFIG_KEY_0=http.extraHeader", logged)
@@ -349,11 +370,13 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         self.assertIn("Base directory does not exist", result.stdout)
 
     def test_run_report_posts_summary_without_the_token(self):
-        with form_server() as url:
+        use_profile_checkout(self.fixture)
+        with form_server() as url, fake_github_server() as api_url:
             result = self.backup(
                 env={
                     "GITHUB_BACKUP_NOTIFY_URL": url,
                     "GITHUB_BACKUP_TOKEN": "super-secret-token-value",
+                    "GITHUB_BACKUP_API_URL": api_url,
                 }
             )
 
@@ -362,11 +385,11 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         post = FormHandler.posts[0]
         self.assertEqual("application/json", post["accept"])
         self.assertTrue(post["content_type"].startswith("application/x-www-form-urlencoded"))
-        self.assertEqual("github-backup/1.4.5", post["user_agent"])
+        self.assertEqual("github-backup/1.4.6", post["user_agent"])
         self.assertEqual("github-backup", form_field("program"))
         self.assertEqual("ok", form_field("status"))
         self.assertIn("0 failed", form_field("summary"))
-        self.assertIn("sample: up to date", form_field("log"))
+        self.assertIn("private-one: up to date", form_field("log"))
         self.assertIn("github-backup ", form_field("_subject"))
         self.assertNotIn("super-secret-token-value", post["raw"])
         self.assertNotIn("Bearer", post["raw"])
@@ -539,10 +562,15 @@ class GitHubBackupSafetyTests(unittest.TestCase):
 class FakeGitHubHandler(http.server.BaseHTTPRequestHandler):
     requests = []
     repeat_full_page = False
+    fail_login = False
 
     def do_GET(self):
         type(self).requests.append((self.path, self.headers.get("Authorization")))
         if self.path == "/user":
+            if type(self).fail_login:
+                self.send_response(401)
+                self.end_headers()
+                return
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -627,6 +655,7 @@ class FakeGitHubHandler(http.server.BaseHTTPRequestHandler):
 @contextlib.contextmanager
 def fake_github_server():
     FakeGitHubHandler.requests = []
+    FakeGitHubHandler.fail_login = False
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeGitHubHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -797,6 +826,82 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
             )
         self.assertIn("alice/one: would clone into", result.stdout)
         self.assertFalse(destination.exists())
+
+    def test_sync_with_a_token_downloads_the_authenticated_profile(self):
+        destination = self.root / "repos"
+        with fake_github_server() as api_url:
+            result = run(
+                SCRIPT,
+                "sync",
+                "--base-dir",
+                destination,
+                "--dry-run",
+                "--log-file",
+                self.log,
+                env={
+                    "GITHUB_BACKUP_API_URL": api_url,
+                    "GITHUB_BACKUP_TOKEN": "test-token",
+                },
+            )
+        self.assertEqual(0, result.returncode)
+        self.assertIn(
+            f"alice/private-one: would clone into {destination / 'private-one'}",
+            result.stdout,
+        )
+        self.assertFalse(destination.exists())
+        paths = [path for path, _header in FakeGitHubHandler.requests]
+        self.assertIn("/user", paths)
+        self.assertTrue(any(path.startswith("/user/repos") for path in paths))
+
+    def test_explicit_profile_overrides_the_token_account(self):
+        destination = self.root / "repos"
+        with fake_github_server() as api_url:
+            result = run(
+                SCRIPT,
+                "sync",
+                "--profile",
+                "acme",
+                "--base-dir",
+                destination,
+                "--dry-run",
+                "--log-file",
+                self.log,
+                env={
+                    "GITHUB_BACKUP_API_URL": api_url,
+                    "GITHUB_BACKUP_TOKEN": "test-token",
+                },
+            )
+        self.assertEqual(0, result.returncode)
+        self.assertIn(
+            f"acme/org-one: would clone into {destination / 'org-one'}",
+            result.stdout,
+        )
+        self.assertNotIn("private-one", result.stdout)
+
+    def test_unreadable_token_does_not_update_local_repositories(self):
+        destination = self.root / "repos"
+        destination.mkdir()
+        try:
+            with fake_github_server() as api_url:
+                FakeGitHubHandler.fail_login = True
+                result = run(
+                    SCRIPT,
+                    "sync",
+                    "--base-dir",
+                    destination,
+                    "--log-file",
+                    self.log,
+                    env={
+                        "GITHUB_BACKUP_API_URL": api_url,
+                        "GITHUB_BACKUP_TOKEN": "test-token",
+                    },
+                    check=False,
+                )
+        finally:
+            FakeGitHubHandler.fail_login = False
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(result.stdout.count("profile was not downloaded"), 1)
+        self.assertNotIn("Summary:", result.stdout)
 
     def test_profile_refuses_nested_directory_inside_another_repository(self):
         fixture = GitFixture(self.root / "fixture")
@@ -1482,6 +1587,7 @@ class GitHubBackupConfigFileTests(unittest.TestCase):
             f'exec "{real_git}" "$@"\n'
         )
         wrapper.chmod(0o755)
+        use_profile_checkout(self.fixture)
         self.write_config(config_text)
         merged = {
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -1489,14 +1595,16 @@ class GitHubBackupConfigFileTests(unittest.TestCase):
         }
         if env:
             merged.update(env)
-        result = run(
-            SCRIPT,
-            "sync",
-            "--config",
-            self.config,
-            *extra,
-            env=merged,
-        )
+        with fake_github_server() as api_url:
+            merged["GITHUB_BACKUP_API_URL"] = api_url
+            result = run(
+                SCRIPT,
+                "sync",
+                "--config",
+                self.config,
+                *extra,
+                env=merged,
+            )
         return result, fetch_log.read_text()
 
     def test_config_file_token_is_used_and_beats_the_environment(self):
@@ -1534,7 +1642,8 @@ class GitHubBackupConfigFileTests(unittest.TestCase):
         self.assertNotIn("file-token", logged)
 
     def test_config_file_token_is_not_in_the_run_report(self):
-        with form_server() as url:
+        use_profile_checkout(self.fixture)
+        with form_server() as url, fake_github_server() as api_url:
             self.write_config(
                 "\n".join(
                     [
@@ -1550,7 +1659,10 @@ class GitHubBackupConfigFileTests(unittest.TestCase):
                 "sync",
                 "--config",
                 self.config,
-                env={"GITHUB_BACKUP_NOTIFY_URL": url},
+                env={
+                    "GITHUB_BACKUP_NOTIFY_URL": url,
+                    "GITHUB_BACKUP_API_URL": api_url,
+                },
             )
 
         self.assertIn("Submitted the run report.", result.stdout)
