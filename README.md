@@ -24,9 +24,10 @@ sudo github-backup start
 ```
 
 `install` copies the command. `setup` prepares the machine and installs
-`/etc/github-backup/github-backup.conf`. Uncomment `--token` in that file.
-`sync` then downloads every repository owned by that account into the base
-directory. `enable` arms the nightly timer. `start` runs a backup immediately.
+`/etc/github-backup/github-backup.conf`. Uncomment `--token` in that file
+and paste a token from [Generate a token](#generate-a-token). `sync` then
+downloads every repository owned by that account into the base directory.
+`enable` arms the nightly timer. `start` runs a backup immediately.
 
 ## Safety
 
@@ -571,15 +572,56 @@ github-backup sync --base-dir /mnt/nas/github
 unset GITHUB_BACKUP_TOKEN
 ```
 
-For the timer, uncomment `--token` in `/etc/github-backup/github-backup.conf`
-and paste the token there. `sync` downloads every repository that account
-owns. A
-fine-grained token needs **Contents: Read-only** at
-<https://github.com/settings/personal-access-tokens/new>. A classic token needs
-the `repo` scope for private repositories at
-<https://github.com/settings/tokens/new>. Public repositories need no token.
-Unauthenticated API use is about 60 requests per hour. Authenticated use is
-about 5,000 per hour.
+### Generate a token
+
+Public repositories need no token. A token lets `sync` see private
+repositories and download every repository that account owns. GitHub shows
+the value once. Copy it, then store it in the option file:
+
+```text
+--token github_pat_...
+```
+
+Remove the leading `# ` from that line in
+`/etc/github-backup/github-backup.conf`. The file is mode `600`. `setup` does
+not copy the token into `/etc/default/github-backup`. When the token expires,
+generate a new one and replace that line.
+
+**Fine-grained token.** Use this one. Open
+[Fine-grained tokens](https://github.com/settings/personal-access-tokens/new),
+or go to your avatar, **Settings**, **Developer settings**, **Personal access
+tokens**, **Fine-grained tokens**, **Generate new token**.
+
+1. Token name: `github-backup`.
+2. Resource owner: your user account. To back up an organization, choose that
+   organization. The token can stay pending until an organization owner
+   approves it.
+3. Expiration: choose a date.
+4. Repository access: **All repositories**. That is the set `sync` downloads.
+   **Only select repositories** limits the backup to the repositories you pick.
+5. Repository permissions: **Contents** set to **Read-only**. Leave the other
+   repository permissions at **No access**. GitHub adds **Metadata: Read-only**
+   on its own, and that permission is what lists the repositories.
+6. Account permissions: leave them at **No access**.
+7. Click **Generate token** and copy the value. It starts with `github_pat_`.
+
+**Classic token.** Use this when a fine-grained token cannot see the
+repositories. Open
+[Tokens (classic)](https://github.com/settings/tokens/new),
+or go to **Developer settings**, **Personal access tokens**, **Tokens
+(classic)**, **Generate new token (classic)**.
+
+1. Note: `github-backup`.
+2. Expiration: choose a date.
+3. Scope: **repo**. That reads the private and public repositories the account
+   can access. A public-only backup can use **public_repo** instead.
+4. Click **Generate token** and copy the value. It starts with `ghp_`.
+5. If the organization uses SAML single sign-on, open the token and click
+   **Configure SSO**, then authorize that organization. Until you do, the
+   organization's repositories stay out of the list.
+
+`sync` then downloads every repository that account owns. Unauthenticated API
+use is about 60 requests per hour. Authenticated use is about 5,000 per hour.
 
 ### Run report
 
