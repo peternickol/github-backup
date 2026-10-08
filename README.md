@@ -23,8 +23,10 @@ sudo github-backup enable
 sudo github-backup start
 ```
 
-`install` copies the command. `setup` prepares the machine. `enable` arms the
-nightly timer. `start` runs a backup immediately.
+`install` copies the command. `setup` prepares the machine and installs
+`/etc/github-backup/github-backup.conf`. Uncomment `--token` in that file
+before the first private backup. `enable` arms the nightly timer. `start`
+runs a backup immediately.
 
 ## Safety
 
@@ -91,7 +93,7 @@ issues, releases, and Git LFS objects are not downloaded.
 | `is-active` | Report whether the timer is active. |
 | `status` | Show the timer, then the service. |
 | `journal` | Follow the service journal. |
-| `--version`, `-V` | Print `github-backup 1.4.1`. |
+| `--version`, `-V` | Print `github-backup 1.4.3`. |
 | `--help`, `-h` | Print every command, every option, and the examples. |
 
 ### `sync`
@@ -135,9 +137,11 @@ If `GITHUB_BACKUP_PROFILE` is set, `sync` switches to profile mode. That is
 what the systemd service runs: the unit executes `github-backup sync`, and the
 configuration file supplies the profile. The service runs as root.
 
-`--skip NAME` adds that name to the configured skip list. `--skip-list A,B`
-replaces the configured list for this run, and any `--skip` names are still
-added. Matching is the repository directory name, exactly.
+`--skip NAME` adds that name to the skip list from the environment or the
+defaults file. `--skip-list A,B` replaces that list for this run, and any
+`--skip` names are still added. On the command line, either flag replaces
+skip names from the conf file. Matching is the repository directory name,
+exactly.
 
 Options: `--base-dir`, `--profile`, `--skip`, `--skip-list`, `--dry-run`,
 `--verbose`, `--debug`, `--quiet`, `--force-fast-forward`, `--log-file`.
@@ -189,8 +193,10 @@ and does not print a summary. An unknown or empty profile name exits `1`.
 ### `setup`
 
 Prepare this machine. The first run creates the base directory, creates the
-log file when it can, writes `/etc/default/github-backup` mode `600`, and
-installs the systemd units. It does not arm the timer.
+log file when it can, writes `/etc/default/github-backup` and
+`/etc/github-backup/github-backup.conf` mode `600`, and installs the systemd
+units. It does not arm the timer. The option file lists every option, commented
+out, with a short note and a link to this README.
 
 ```bash
 sudo github-backup setup --base-dir /mnt/nas/github
@@ -206,15 +212,18 @@ sudo github-backup setup \
 sudo github-backup setup --force --schedule 'Mon *-*-* 03:00:00'
 ```
 
-A second `setup` keeps an existing configuration file and existing unit files.
-It still creates a missing base directory or log file from the paths on this
-command, but those paths are not saved unless you pass `--force`. Pass
-`--force` to replace the units and rewrite the configuration. The rewrite uses
-the flags from this run, then the environment, then the current file. Always
-pass `--schedule` again with `--force`: the schedule is stored in the timer,
-and omitting it sets the timer back to `*-*-* 02:00:00`. An uncommented
-`GITHUB_BACKUP_TOKEN=` line is copied into the new file. `setup` does not copy
-a token out of the environment. `GITHUB_BACKUP_EMAIL`,
+A second `setup` keeps an existing defaults file, an existing option file, and
+existing unit files. It still creates a missing base directory or log file from
+the paths on this command, but those paths are not saved unless you pass
+`--force`. Pass `--force` to replace the units and rewrite the defaults file.
+The rewrite uses the flags from this run, then the environment, then the
+current defaults file. `--force` also refreshes the comments in the option
+file and keeps every uncommented line, including `--token`. Always pass
+`--schedule` again with `--force`: the schedule is stored in the timer, and
+omitting it sets the timer back to `*-*-* 02:00:00`. An uncommented
+`GITHUB_BACKUP_TOKEN=` line in the defaults file is copied into the new
+defaults file. `setup` does not copy a token out of the environment or out of
+the option file into the defaults file. `GITHUB_BACKUP_EMAIL`,
 `GITHUB_BACKUP_NOTIFY_URL`, the base directory, the profile, the log path, and
 the skip list do come from the environment when those variables are set.
 
@@ -282,7 +291,8 @@ sudo github-backup --uninstall
 
 If the command is already absent, uninstall reports that and still removes
 units and completion. The base directory, cloned repositories, and the log
-file stay either way. `--purge-config` removes only `/etc/default/github-backup`.
+file stay either way. `--purge-config` removes `/etc/default/github-backup`
+and `/etc/github-backup/github-backup.conf`.
 
 ### `enable`
 
@@ -404,7 +414,7 @@ github-backup --help
 github-backup -h
 ```
 
-`--version` prints `github-backup 1.4.1`. Running `github-backup` with no
+`--version` prints `github-backup 1.4.3`. Running `github-backup` with no
 arguments prints the same text as `--help` and exits `0`. An unknown argument,
 or an option with no value, prints the error and then the same help, and
 exits `1`.
@@ -416,22 +426,23 @@ exits `1`.
 | `--base-dir DIR` | `sync`, `profile`, `setup` | Directory to crawl, or the directory that receives profile clones. Default: `$HOME/github-backup`. |
 | `--profile USER` | `sync`, `setup` | On `sync`, clone and update `USER`. On `setup`, store that profile for later runs. |
 | `--list-repos USER` | anywhere | Switch this run to `list-repos`. |
-| `--skip REPO` | `sync`, `profile` | Skip one repository directory name. Repeat the flag to skip more than one. Names are added to the configured list. Matching is exact. |
-| `--skip-list A,B,C` | `sync`, `profile`, `setup` | Skip a comma-separated list. Spaces around names are removed. This replaces the configured list for this run. On `setup --force`, it also replaces the saved list. |
+| `--skip REPO` | `sync`, `profile` | Skip one repository directory name. Repeat the flag to skip more than one. Names are added to the list from the environment or the defaults file. Matching is exact. |
+| `--skip-list A,B,C` | `sync`, `profile`, `setup` | Skip a comma-separated list. Spaces around names are removed. This replaces the list from the environment or the defaults file for this run. On `setup --force`, it also replaces the saved list. |
 | `--dry-run` | `sync`, `profile` | Print what would change using the remote-tracking branch already on disk. Do not fetch, merge, clone, reset, or move `HEAD`. Up-to-date repositories are omitted unless `--verbose` is set. `sync` still requires the base directory and takes the lock. |
 | `--verbose` | `sync`, `profile`, `list-repos` | Also print repositories that are already current. Updates, clones, skips, and failures print either way. For `list-repos`, add `public` or `private`. |
 | `--debug` | `sync`, `profile` | Print `Fetching REMOTE for REPO` on stderr. This still prints when `--quiet` is set. |
 | `--quiet`, `-q` | any command | Hide `[INFO]`, `[OK]`, and `[WARN]`, including skip lines and the summary. Errors still print. The log file is still written. One warning still prints if the log cannot be written. See [Messages](#messages). |
 | `--force-fast-forward` | `sync`, `profile` | Reset eligible checkouts to the upstream commit and delete untracked files. |
 | `--log-file FILE` | `sync`, `profile`, `setup` | Log path for this run. On `setup`, also the path saved in the configuration file. Default: `/var/log/github-backup.log`. |
-| `--config FILE` | any command | Read command-line options from `FILE`. One option per line. |
+| `--token TOKEN` | any command | GitHub token for this run. Put it in the conf file so later runs do not need it again. |
+| `--config FILE` | any command | Use `FILE` instead of `/etc/github-backup/github-backup.conf`. One option per line, including `--token`. On `setup`, the service runs `sync --config FILE`. |
 | `--schedule CALENDAR` | `setup` | systemd `OnCalendar` value. Default: `*-*-* 02:00:00`. |
 | `--no-systemd` | `setup` | Write the configuration and skip unit installation. |
 | `--force`, `-f` | `install`, `setup` | Overwrite an existing binary, completion file, or unit. On `setup`, also rewrite the configuration. |
 | `--no-completion` | `install`, `update` | Do not install or refresh Bash completion. |
 | `--completion-only` | `install` | Install Bash completion and exit. |
 | `--uninstall-completion` | `install` | Remove Bash completion and exit. |
-| `--purge-config` | `uninstall` | Also remove `/etc/default/github-backup`. |
+| `--purge-config` | `uninstall` | Also remove `/etc/default/github-backup` and `/etc/github-backup/github-backup.conf`. |
 | `-V`, `--version` | anywhere | Print the version and exit. |
 | `-h`, `--help` | anywhere | Print the command summary and exit. |
 
@@ -440,8 +451,7 @@ A flag may appear before or after the command name:
 ```bash
 github-backup --dry-run --verbose sync --base-dir ~/src
 github-backup sync --base-dir ~/src --dry-run --verbose
-github-backup sync --config /etc/github-backup/backup.conf
-github-backup sync --config /etc/github-backup/backup.conf --dry-run
+github-backup sync --config /etc/github-backup/github-backup.conf --dry-run
 ```
 
 `--profile` and `--list-repos` are also accepted as the old option form, without
@@ -450,37 +460,55 @@ forms of those three commands.
 
 ### Option file
 
-Pass the options on the command line, or pass `--config FILE` and store those
-options in the file. The command (`sync`, `profile`, `setup`, and the rest)
-stays on the command line. `--config` inside the file is rejected.
+`setup` installs `/etc/github-backup/github-backup.conf`. The command reads
+that file on every run, including the timer. You do not pass `--config` for
+the installed file. `--config FILE` uses a different file instead, the same
+way `sshd -f` selects another `sshd_config`. The command (`sync`, `profile`,
+`setup`, and the rest) stays on the command line. `--config` inside the file
+is rejected.
+
+The installed file lists every option, commented out, with a short note and a
+link to the matching section of this README. `github-backup.conf.example` is
+the same text. Remove the leading `# ` from a line to set that option:
 
 ```text
-# /etc/github-backup/backup.conf
+# --token github_pat_...
+--token github_pat_your_token_here
+
+# --base-dir /mnt/nas/github
 --base-dir /mnt/nas/github
---log-file /var/log/github-backup.log
-# --profile YOUR_GITHUB_USERNAME
-# --skip repo-one
-# --quiet
 ```
 
 One option per line. A blank line is ignored. A line that starts with `#` is a
 comment. Wrap a value in quotes when it contains spaces:
 `--base-dir "/mnt/nas/my mirrors"`. `--base-dir=/mnt/nas/github` is the same as
 `--base-dir /mnt/nas/github`. A flag in the file, such as `--quiet` or
-`--dry-run`, is on for every run that uses the file. Omit the line to leave it
-off. There is no `--no-dry-run`.
+`--dry-run`, is on for every run that reads the file. Leave the line
+commented to keep it off. There is no `--no-dry-run`. Leave
+`--force-fast-forward` commented.
 
-A flag typed on the command line wins over the same option in the file.
-`--config` wins over the environment and over `/etc/default/github-backup` for
-each option the file sets. Options the file does not set still come from the
-environment, then the defaults file, then the built-in value.
+The file is read first. A command-line flag replaces the same setting from
+the file. `--base-dir /tmp/src` on the command line replaces the file's
+`--base-dir`. `--skip` or `--skip-list` on the command line replaces the
+skip names from the file. A flag the command line does not mention stays as
+the file set it. A setting neither one mentions comes from the environment,
+then `/etc/default/github-backup`, then the built-in value. When the option
+file is missing, the command still runs with those later sources.
 
-The GitHub token, `GITHUB_BACKUP_EMAIL`, and `GITHUB_BACKUP_NOTIFY_URL` are
-not command-line options. They stay in the environment or in
-`/etc/default/github-backup`.
+`--token` in the file is the saved GitHub token. The run uses it without
+asking again. Keep the file mode `600`, and do not commit it after the token
+is filled in. `--token` on the command line replaces the file's token, and
+the shell keeps that command in its history. `setup` does not copy `--token`
+into the defaults file. `GITHUB_BACKUP_EMAIL` and `GITHUB_BACKUP_NOTIFY_URL`
+stay in the environment or in that defaults file. The comments at the top of
+the option file link to [Run report](#run-report). The token is not a field
+in the run report.
 
-`github-backup.conf.example` is a commented starting point. Nothing loads it
-until you pass its path to `--config`.
+The service runs `sync --config /etc/github-backup/github-backup.conf`.
+`setup --config FILE` points the service at `FILE` instead, so the timer uses
+that saved token. Pass `--config` again with `--force`, the same way you pass
+`--schedule` again. `setup --force` refreshes the comments in the installed
+option file and keeps uncommented lines.
 
 ## Configuration
 
@@ -509,7 +537,7 @@ GITHUB_BACKUP_SKIP_LIST=repo-one,repo-two
 | `GITHUB_BACKUP_LOG_FILE` | Log file. Each line is `YYYY-MM-DD HH:MM:SS [LEVEL] message`. |
 | `GITHUB_BACKUP_EMAIL` | Address for failure mail. Mail is sent only when at least one repository fails. |
 | `GITHUB_BACKUP_NOTIFY_URL` | Form endpoint for a report after every real `sync` or `profile`. |
-| `GITHUB_BACKUP_TOKEN` | GitHub token. Leave this commented until you edit the file. |
+| `GITHUB_BACKUP_TOKEN` | GitHub token. Prefer `--token` in the option file. This line stays commented. |
 | `GITHUB_BACKUP_SKIP_LIST` | Comma-separated repository names to skip. |
 
 Quote a value that contains spaces. systemd and this command both accept that form:
@@ -532,7 +560,8 @@ github-backup profile YOUR_GITHUB_USERNAME --base-dir /mnt/nas/github/YOUR_GITHU
 unset GITHUB_BACKUP_TOKEN
 ```
 
-Then copy the token into `/etc/default/github-backup` for the timer. A
+For the timer, uncomment `--token` in `/etc/github-backup/github-backup.conf`
+and paste the token there. A
 fine-grained token needs **Contents: Read-only** at
 <https://github.com/settings/personal-access-tokens/new>. A classic token needs
 the `repo` scope for private repositories at
@@ -644,7 +673,8 @@ Run that as root so it can read the mode `600` configuration file.
 | `GITHUB_BACKUP_SCHEDULE` | `*-*-* 02:00:00` | Calendar used by `setup`. |
 | `GITHUB_BACKUP_INSTALL_PATH` | `/usr/local/bin/github-backup` | Where `install` and `update` write the command. |
 | `GITHUB_BACKUP_UPDATE_URL` | the `master` script URL above | Where `update` downloads the script. |
-| `GITHUB_BACKUP_DEFAULTS_FILE` | `/etc/default/github-backup` | Configuration path. |
+| `GITHUB_BACKUP_DEFAULTS_FILE` | `/etc/default/github-backup` | Defaults file path. |
+| `GITHUB_BACKUP_CONFIG` | `/etc/github-backup/github-backup.conf` | Option file `setup` installs and the command reads when `--config` is omitted. |
 | `GITHUB_BACKUP_SYSTEMD_DIR` | `/etc/systemd/system` | Where `setup` writes the units. |
 | `GITHUB_BACKUP_COMPLETION_DIR` | the detected completion directory | Where completion is installed. |
 | `GITHUB_BACKUP_API_URL` | `https://api.github.com` | GitHub API root. |
@@ -660,8 +690,9 @@ root when their directories are writable by you.
 | Path | Purpose |
 |---|---|
 | `/usr/local/bin/github-backup` | The command. |
-| `/etc/default/github-backup` | Base directory, profile, token, log, email, and skip list. Mode `600`. |
-| `/etc/systemd/system/github-backup.service` | Oneshot service. `ExecStart` is `github-backup sync`. It runs as root. |
+| `/etc/default/github-backup` | Base directory, profile, log, email, notify URL, and skip list. Mode `600`. |
+| `/etc/github-backup/github-backup.conf` | Every option, commented, with a short note and links to this README. Uncomment a line to set it. `--token` lives here. Mode `600`. |
+| `/etc/systemd/system/github-backup.service` | Oneshot service. `ExecStart` is `github-backup sync --config /etc/github-backup/github-backup.conf`, or `github-backup sync --config FILE` when setup was given `--config`. It runs as root. |
 | `/etc/systemd/system/github-backup.timer` | Calendar timer for that service. |
 | `/var/log/github-backup.log` | Default log. `setup` creates it mode `640` when run as root. |
 | `$BASE_DIR/.github-backup.lock` | Lock for that base directory. A second run exits `1`. |
@@ -669,7 +700,9 @@ root when their directories are writable by you.
 
 `setup` writes these units. `ExecStart` uses the install path from the moment
 of setup, which is `/usr/local/bin/github-backup` unless
-`GITHUB_BACKUP_INSTALL_PATH` says otherwise.
+`GITHUB_BACKUP_INSTALL_PATH` says otherwise. The line is
+`github-backup sync --config /etc/github-backup/github-backup.conf`, or
+`github-backup sync --config FILE` when setup was given `--config`.
 
 ```ini
 [Unit]
@@ -680,7 +713,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=-/etc/default/github-backup
-ExecStart=/usr/local/bin/github-backup sync
+ExecStart=/usr/local/bin/github-backup sync --config /etc/github-backup/github-backup.conf
 NoNewPrivileges=true
 PrivateTmp=true
 ```

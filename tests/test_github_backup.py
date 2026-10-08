@@ -18,6 +18,7 @@ SCRIPT = ROOT / "github-backup.sh"
 def run(*args, cwd=None, env=None, check=True):
     merged_env = os.environ.copy()
     merged_env.pop("GITHUB_BACKUP_NOTIFY_URL", None)
+    merged_env["GITHUB_BACKUP_CONFIG"] = "/tmp/github-backup-test-no-option-file.conf"
     merged_env.update(
         {
             "GIT_AUTHOR_NAME": "github-backup tests",
@@ -357,7 +358,7 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         post = FormHandler.posts[0]
         self.assertEqual("application/json", post["accept"])
         self.assertTrue(post["content_type"].startswith("application/x-www-form-urlencoded"))
-        self.assertEqual("github-backup/1.4.1", post["user_agent"])
+        self.assertEqual("github-backup/1.4.3", post["user_agent"])
         self.assertEqual("github-backup", form_field("program"))
         self.assertEqual("ok", form_field("status"))
         self.assertIn("0 failed", form_field("summary"))
@@ -602,6 +603,7 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
                 env.pop("GITHUB_BACKUP_TOKEN", None)
                 env.pop("GH_TOKEN", None)
                 env.pop("GITHUB_BACKUP_NOTIFY_URL", None)
+                env["GITHUB_BACKUP_CONFIG"] = "/tmp/github-backup-test-no-option-file.conf"
                 env["GITHUB_BACKUP_API_URL"] = api_url
                 result = subprocess.run(
                     [str(SCRIPT), "list-repos", "alice", "--log-file", str(self.log)],
@@ -753,6 +755,7 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
             "GITHUB_BACKUP_COMPLETION_DIR": str(root / "completion"),
             "GITHUB_BACKUP_SYSTEMD_DIR": str(root / "systemd"),
             "GITHUB_BACKUP_DEFAULTS_FILE": str(root / "etc" / "github-backup"),
+            "GITHUB_BACKUP_CONFIG": str(root / "etc" / "github-backup.conf"),
         }
 
     def test_install_copies_binary_and_completion_without_units(self):
@@ -764,6 +767,7 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
         completion = pathlib.Path(env["GITHUB_BACKUP_COMPLETION_DIR"], "github-backup").read_text()
         self.assertIn("--force-fast-forward", completion)
         self.assertIn("--config", completion)
+        self.assertIn("--token", completion)
         self.assertIn("setup", completion)
         self.assertFalse(pathlib.Path(env["GITHUB_BACKUP_DEFAULTS_FILE"]).exists())
         self.assertFalse(pathlib.Path(env["GITHUB_BACKUP_SYSTEMD_DIR"], "github-backup.service").exists())
@@ -798,6 +802,147 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
         self.assertIn(f'GITHUB_BACKUP_BASE_DIR="{destination}"', defaults)
         self.assertIn("# GITHUB_BACKUP_EMAIL=you@example.com", defaults)
         self.assertIn("# GITHUB_BACKUP_NOTIFY_URL=https://formester.com/f/yourFormId", defaults)
+        self.assertIn(
+            f'ExecStart={env["GITHUB_BACKUP_INSTALL_PATH"]} sync --config {env["GITHUB_BACKUP_CONFIG"]}',
+            service,
+        )
+
+    def test_setup_installs_commented_option_file(self):
+        env = self.paths("option-file")
+        destination = self.root / "option-file" / "repos"
+        run(
+            SCRIPT,
+            "setup",
+            "--base-dir",
+            destination,
+            "--log-file",
+            self.root / "option-file" / "backup.log",
+            env=env,
+        )
+
+        installed = pathlib.Path(env["GITHUB_BACKUP_CONFIG"])
+        text = installed.read_text()
+        self.assertEqual(0o600, installed.stat().st_mode & 0o777)
+        self.assertEqual((ROOT / "github-backup.conf.example").read_text(), text)
+        for option in (
+            "--base-dir",
+            "--profile",
+            "# --skip repo-one",
+            "--skip-list",
+            "--log-file",
+            "--token",
+            "--dry-run",
+            "--verbose",
+            "--debug",
+            "--quiet",
+            "--force-fast-forward",
+            "--schedule",
+            "--no-systemd",
+            "--no-completion",
+            "--completion-only",
+            "--uninstall-completion",
+            "--purge-config",
+            "--list-repos",
+            "--config",
+            "--install",
+            "--update",
+            "--uninstall",
+            "--version",
+            "--help",
+            "\n# -q\n",
+            "\n# -f\n",
+            "\n# -V\n",
+            "\n# -h\n",
+            "GITHUB_BACKUP_EMAIL",
+            "GITHUB_BACKUP_NOTIFY_URL",
+            "https://github.com/peternickol/github-backup/blob/master/README.md#safety",
+            "https://github.com/peternickol/github-backup/blob/master/README.md#commands",
+            "https://github.com/peternickol/github-backup/blob/master/README.md#options",
+            "https://github.com/peternickol/github-backup/blob/master/README.md#run-report",
+            "https://github.com/peternickol/github-backup/blob/master/README.md#schedule",
+            "https://github.com/peternickol/github-backup/blob/master/README.md#configuration",
+            "https://github.com/peternickol/github-backup/blob/master/README.md#profile",
+            "https://github.com/peternickol/github-backup/blob/master/README.md#setup",
+            "https://github.com/peternickol/github-backup/blob/master/README.md#install",
+            "https://github.com/peternickol/github-backup/blob/master/README.md#uninstall",
+            "https://github.com/peternickol/github-backup/blob/master/README.md#list-repos",
+            "https://github.com/peternickol/github-backup/blob/master/README.md#sync",
+            "https://github.com/peternickol/github-backup/blob/master/README.md#version-and-help",
+        ):
+            self.assertIn(option, text)
+        self.assertEqual([], [line for line in text.splitlines() if line.startswith("-")])
+
+    def test_setup_preserves_an_edited_option_file(self):
+        env = self.paths("keep-option")
+        destination = self.root / "keep-option" / "repos"
+        log_file = self.root / "keep-option" / "backup.log"
+        run(
+            SCRIPT,
+            "setup",
+            "--no-systemd",
+            "--base-dir",
+            destination,
+            "--log-file",
+            log_file,
+            env=env,
+        )
+        option = pathlib.Path(env["GITHUB_BACKUP_CONFIG"])
+        option.write_text(option.read_text() + "--token super-secret-token-value\n")
+
+        run(
+            SCRIPT,
+            "setup",
+            "--no-systemd",
+            "--base-dir",
+            destination,
+            "--log-file",
+            log_file,
+            env=env,
+        )
+
+        self.assertEqual(1, option.read_text().count("--token super-secret-token-value"))
+
+    def test_setup_force_keeps_uncommented_option_lines(self):
+        env = self.paths("refresh-option")
+        destination = self.root / "refresh-option" / "repos"
+        log_file = self.root / "refresh-option" / "backup.log"
+        run(
+            SCRIPT,
+            "setup",
+            "--no-systemd",
+            "--base-dir",
+            destination,
+            "--log-file",
+            log_file,
+            env=env,
+        )
+        option = pathlib.Path(env["GITHUB_BACKUP_CONFIG"])
+        option.write_text(
+            "# old comment that should be refreshed\n"
+            "--token super-secret-token-value\n"
+            "--base-dir /kept\n"
+        )
+
+        run(
+            SCRIPT,
+            "setup",
+            "--force",
+            "--no-systemd",
+            "--base-dir",
+            destination,
+            "--log-file",
+            log_file,
+            env=env,
+        )
+
+        text = option.read_text()
+        self.assertIn("sshd_config", text)
+        self.assertIn("# Settings kept from the previous file.", text)
+        self.assertIn("--token super-secret-token-value", text)
+        self.assertIn("--base-dir /kept", text)
+        self.assertNotIn("old comment that should be refreshed", text)
+        defaults = pathlib.Path(env["GITHUB_BACKUP_DEFAULTS_FILE"]).read_text()
+        self.assertNotIn("super-secret-token-value", defaults)
 
     def test_setup_saves_notify_url_from_the_environment(self):
         env = self.paths("notify-setup")
@@ -943,6 +1088,7 @@ class GitHubBackupHelpTests(unittest.TestCase):
         self.assertIn("profile USER", result.stdout)
         self.assertIn("GITHUB_BACKUP_NOTIFY_URL", result.stdout)
         self.assertIn("--config FILE", result.stdout)
+        self.assertIn("--token TOKEN", result.stdout)
         self.assertIn("The backup command is: github-backup sync", result.stdout)
         self.assertNotIn("[ERROR]", result.stdout)
 
@@ -1060,6 +1206,100 @@ class GitHubBackupConfigFileTests(unittest.TestCase):
         self.assertIn("up to date", result.stdout)
         self.assertNotIn("from-env", result.stdout)
 
+    def test_command_line_skip_replaces_the_config_file_skip(self):
+        self.write_config(
+            "\n".join(
+                [
+                    f"--base-dir {self.fixture.client.parent}",
+                    f"--log-file {self.log}",
+                    "--dry-run",
+                    "--verbose",
+                    "--skip sample",
+                ]
+            )
+            + "\n"
+        )
+
+        result = run(SCRIPT, "sync", "--config", self.config, "--skip", "other")
+
+        self.assertEqual(0, result.returncode)
+        self.assertNotIn("Skipping sample", result.stdout)
+        self.assertIn("sample: up to date", result.stdout)
+
+    def test_command_line_skip_list_replaces_the_config_file_skip_list(self):
+        self.write_config(
+            "\n".join(
+                [
+                    f"--base-dir {self.fixture.client.parent}",
+                    f"--log-file {self.log}",
+                    "--dry-run",
+                    "--verbose",
+                    "--skip-list sample",
+                ]
+            )
+            + "\n"
+        )
+
+        result = run(SCRIPT, "sync", "--config", self.config, "--skip-list", "other")
+
+        self.assertEqual(0, result.returncode)
+        self.assertNotIn("Skipping sample", result.stdout)
+        self.assertIn("sample: up to date", result.stdout)
+
+    def test_config_skip_list_replaces_the_environment_skip_list(self):
+        self.write_config(
+            "\n".join(
+                [
+                    f"--base-dir {self.fixture.client.parent}",
+                    f"--log-file {self.log}",
+                    "--dry-run",
+                    "--verbose",
+                    "--skip-list other",
+                ]
+            )
+            + "\n"
+        )
+
+        result = run(
+            SCRIPT,
+            "sync",
+            "--config",
+            self.config,
+            env={"GITHUB_BACKUP_SKIP_LIST": "sample"},
+        )
+
+        self.assertEqual(0, result.returncode)
+        self.assertNotIn("Skipping sample", result.stdout)
+        self.assertIn("sample: up to date", result.stdout)
+
+    def test_command_line_skip_keeps_the_environment_list(self):
+        self.write_config(
+            "\n".join(
+                [
+                    f"--base-dir {self.fixture.client.parent}",
+                    f"--log-file {self.log}",
+                    "--dry-run",
+                    "--verbose",
+                    "--skip-list other",
+                ]
+            )
+            + "\n"
+        )
+
+        result = run(
+            SCRIPT,
+            "sync",
+            "--config",
+            self.config,
+            "--skip",
+            "third",
+            env={"GITHUB_BACKUP_SKIP_LIST": "sample"},
+        )
+
+        self.assertEqual(0, result.returncode)
+        self.assertIn("Skipping sample: listed in skip configuration", result.stdout)
+        self.assertNotIn("sample: up to date", result.stdout)
+
     def test_config_file_skip_is_applied(self):
         self.fixture.publish("remote update\n")
         self.write_config(
@@ -1116,6 +1356,219 @@ class GitHubBackupConfigFileTests(unittest.TestCase):
         result = run(SCRIPT, "sync", "--config", self.config, check=False)
         self.assertEqual(1, result.returncode)
         self.assertIn("--config cannot be nested", result.stdout)
+
+    def bearer_from_config(self, config_text, *extra, env=None):
+        fake_bin = self.root / "fake-bin"
+        fake_bin.mkdir()
+        fetch_log = self.root / "fetch-env.log"
+        real_git = shutil.which("git")
+        wrapper = fake_bin / "git"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            "for arg in \"$@\"; do\n"
+            "  if [ \"$arg\" = fetch ]; then\n"
+            "    env | grep '^GIT_CONFIG_' | sort > \"$FETCH_LOG\"\n"
+            "  fi\n"
+            "done\n"
+            f'exec "{real_git}" "$@"\n'
+        )
+        wrapper.chmod(0o755)
+        self.write_config(config_text)
+        merged = {
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "FETCH_LOG": str(fetch_log),
+        }
+        if env:
+            merged.update(env)
+        result = run(
+            SCRIPT,
+            "sync",
+            "--config",
+            self.config,
+            *extra,
+            env=merged,
+        )
+        return result, fetch_log.read_text()
+
+    def test_config_file_token_is_used_and_beats_the_environment(self):
+        _result, logged = self.bearer_from_config(
+            "\n".join(
+                [
+                    f"--base-dir {self.fixture.client.parent}",
+                    f"--log-file {self.log}",
+                    "--token file-token",
+                ]
+            )
+            + "\n",
+            env={"GITHUB_BACKUP_TOKEN": "env-token"},
+        )
+
+        self.assertIn("GIT_CONFIG_VALUE_0=Authorization: Bearer file-token", logged)
+        self.assertNotIn("env-token", logged)
+        self.assertEqual(self.fixture.remote_head(), self.fixture.client_head())
+
+    def test_command_line_token_overrides_the_config_file(self):
+        _result, logged = self.bearer_from_config(
+            "\n".join(
+                [
+                    f"--base-dir {self.fixture.client.parent}",
+                    f"--log-file {self.log}",
+                    "--token file-token",
+                ]
+            )
+            + "\n",
+            "--token",
+            "cli-token",
+        )
+
+        self.assertIn("GIT_CONFIG_VALUE_0=Authorization: Bearer cli-token", logged)
+        self.assertNotIn("file-token", logged)
+
+    def test_config_file_token_is_not_in_the_run_report(self):
+        with form_server() as url:
+            self.write_config(
+                "\n".join(
+                    [
+                        f"--base-dir {self.fixture.client.parent}",
+                        f"--log-file {self.log}",
+                        "--token super-secret-token-value",
+                    ]
+                )
+                + "\n"
+            )
+            result = run(
+                SCRIPT,
+                "sync",
+                "--config",
+                self.config,
+                env={"GITHUB_BACKUP_NOTIFY_URL": url},
+            )
+
+        self.assertIn("Submitted the run report.", result.stdout)
+        self.assertNotIn("super-secret-token-value", FormHandler.posts[0]["raw"])
+        self.assertNotIn("Bearer", FormHandler.posts[0]["raw"])
+
+    def test_setup_uses_the_config_file_without_copying_the_token(self):
+        env = {
+            "GITHUB_BACKUP_INSTALL_PATH": str(self.root / "bin" / "github-backup"),
+            "GITHUB_BACKUP_COMPLETION_DIR": str(self.root / "completion"),
+            "GITHUB_BACKUP_SYSTEMD_DIR": str(self.root / "systemd"),
+            "GITHUB_BACKUP_DEFAULTS_FILE": str(self.root / "etc" / "github-backup"),
+            "GITHUB_BACKUP_CONFIG": str(self.root / "etc" / "github-backup.conf"),
+        }
+        conf = self.root / "my backup.conf"
+        conf.write_text(
+            "\n".join(
+                [
+                    f"--base-dir {self.root / 'repos'}",
+                    "--token super-secret-token-value",
+                ]
+            )
+            + "\n"
+        )
+        run(
+            SCRIPT,
+            "setup",
+            "--config",
+            conf,
+            "--log-file",
+            self.log,
+            "--no-systemd",
+            env=env,
+        )
+        defaults = pathlib.Path(env["GITHUB_BACKUP_DEFAULTS_FILE"]).read_text()
+        self.assertNotIn("super-secret-token-value", defaults)
+        self.assertIn("# GITHUB_BACKUP_TOKEN=github_pat_...", defaults)
+
+        run(
+            SCRIPT,
+            "setup",
+            "--force",
+            "--config",
+            conf,
+            "--log-file",
+            self.log,
+            env=env,
+        )
+        service = pathlib.Path(env["GITHUB_BACKUP_SYSTEMD_DIR"], "github-backup.service").read_text()
+        self.assertIn(f'ExecStart={env["GITHUB_BACKUP_INSTALL_PATH"]} sync --config "{conf}"', service)
+        self.assertNotIn("super-secret-token-value", service)
+
+    def test_installed_option_file_is_read_without_a_config_flag(self):
+        path = self.root / "github-backup.conf"
+        path.write_text(
+            "\n".join(
+                [
+                    f"--base-dir {self.fixture.client.parent}",
+                    f"--log-file {self.log}",
+                    "--dry-run",
+                    "--verbose",
+                ]
+            )
+            + "\n"
+        )
+
+        result = run(SCRIPT, "sync", env={"GITHUB_BACKUP_CONFIG": str(path)})
+
+        self.assertEqual(0, result.returncode)
+        self.assertIn("sample: up to date", result.stdout)
+
+    def test_explicit_config_replaces_the_installed_option_file(self):
+        installed = self.root / "github-backup.conf"
+        installed.write_text(
+            "\n".join(
+                [
+                    f"--base-dir {self.fixture.client.parent}",
+                    f"--log-file {self.log}",
+                    "--dry-run",
+                    "--verbose",
+                    "--skip sample",
+                ]
+            )
+            + "\n"
+        )
+        self.write_config(
+            "\n".join(
+                [
+                    f"--base-dir {self.fixture.client.parent}",
+                    f"--log-file {self.log}",
+                    "--dry-run",
+                    "--verbose",
+                ]
+            )
+            + "\n"
+        )
+
+        result = run(
+            SCRIPT,
+            "sync",
+            "--config",
+            self.config,
+            env={"GITHUB_BACKUP_CONFIG": str(installed)},
+        )
+
+        self.assertEqual(0, result.returncode)
+        self.assertNotIn("Skipping sample", result.stdout)
+        self.assertIn("sample: up to date", result.stdout)
+
+    def test_command_line_overrides_the_installed_option_file(self):
+        path = self.root / "github-backup.conf"
+        path.write_text(f"--base-dir {self.root / 'missing'}\n--verbose\n")
+
+        result = run(
+            SCRIPT,
+            "sync",
+            "--base-dir",
+            self.fixture.client.parent,
+            "--log-file",
+            self.log,
+            "--dry-run",
+            env={"GITHUB_BACKUP_CONFIG": str(path)},
+        )
+
+        self.assertEqual(0, result.returncode)
+        self.assertIn("up to date", result.stdout)
+        self.assertNotIn("Base directory does not exist", result.stdout)
 
     def test_config_option_once(self):
         self.write_config("--dry-run\n")

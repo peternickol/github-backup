@@ -6,6 +6,6 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=-/etc/default/github-backup
-ExecStart=/usr/local/bin/github-backup sync
+ExecStart=/usr/local/bin/github-backup sync --config /etc/github-backup/github-backup.conf
 NoNewPrivileges=true
 PrivateTmp=true

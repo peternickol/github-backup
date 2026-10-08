@@ -1,17 +1,151 @@
-# Options for github-backup. The command stays on the command line:
+# This is the github-backup system-wide configuration file. See the full
+# README:
+# https://github.com/peternickol/github-backup/blob/master/README.md
 #
-#   github-backup sync --config /etc/github-backup/backup.conf
-#   github-backup sync --config /etc/github-backup/backup.conf --dry-run
+# The strategy matches sshd_config: each option is shown with a sample
+# value, commented out. Remove the leading "# " to set it. Uncommented
+# options override the default. This file is read first. A command-line
+# flag replaces the same option. A setting neither one mentions comes
+# from the environment, then /etc/default/github-backup, then the
+# built-in default.
 #
-# One option per line. Blank lines and lines that start with # are ignored.
-# A flag written here is on for every run that uses this file.
-# A flag on the command line overrides the same option from this file.
-# Do not put the GitHub token, the mail address, or the run-report URL here.
+# The command stays on the command line:
+#   github-backup sync
+#   github-backup profile USER
+#   github-backup setup
+# https://github.com/peternickol/github-backup/blob/master/README.md#commands
+#
+# What a run does
+#   Fast-forward clean GitHub checkouts. With --profile, also clone
+#   repositories that are not on disk yet. Dirty, ahead, diverged, and
+#   detached checkouts are skipped. --force-fast-forward is the only
+#   destructive override. Leave that line commented.
+# https://github.com/peternickol/github-backup/blob/master/README.md#safety
+#
+# Token
+#   Uncomment --token and paste a GitHub token. Keep this file mode 600.
+#   Do not commit the file after the token is filled in. setup does not
+#   copy the token into /etc/default/github-backup. A token on the command
+#   line replaces this one and is kept in shell history.
+# https://github.com/peternickol/github-backup/blob/master/README.md#configuration
+#
+# Mail and the run report
+#   These are not options in this file. Set them in /etc/default/github-backup:
+#     GITHUB_BACKUP_EMAIL=you@example.com
+#     GITHUB_BACKUP_NOTIFY_URL=https://formester.com/f/yourFormId
+#   Mail is sent only when a repository fails. The form receives one report
+#   after each real sync or profile. Turn off reCAPTCHA on that form.
+# https://github.com/peternickol/github-backup/blob/master/README.md#run-report
+#
+# Schedule
+#   Uncomment --schedule, then run: github-backup setup --force
+#   The timer default is *-*-* 02:00:00. The timer may wait up to 30 minutes.
+# https://github.com/peternickol/github-backup/blob/master/README.md#schedule
 
---base-dir /mnt/nas/github
---log-file /var/log/github-backup.log
+# Repository options
+# https://github.com/peternickol/github-backup/blob/master/README.md#options
+
+# Directory to crawl, or where a profile is cloned.
+# Default when commented: $HOME/github-backup
+# --base-dir /mnt/nas/github
+
+# On sync, clone and update this user or organization. On setup, save it.
+# https://github.com/peternickol/github-backup/blob/master/README.md#profile
 # --profile YOUR_GITHUB_USERNAME
+
+# Skip one repository directory name. Repeat the line to skip more than one.
+# Names are added to the list from the environment or the defaults file.
+# A --skip or --skip-list on the command line replaces these names.
 # --skip repo-one
 # --skip repo-two
+
+# Replace the skip list from the environment or the defaults file.
+# On setup --force, this also replaces the saved list.
+# --skip-list repo-one,repo-two
+
+# Log path. Default when commented: /var/log/github-backup.log
+# --log-file /var/log/github-backup.log
+
+# GitHub token for private repositories. This file is the saved credential.
+# --token github_pat_...
+
+# Show what the recorded upstream would do. Does not fetch or merge.
+# Leave this commented for a real backup. There is no --no-dry-run.
+# https://github.com/peternickol/github-backup/blob/master/README.md#sync
+# --dry-run
+
+# Also print repositories that are already current.
+# --verbose
+
+# Print each fetch target on stderr, even with --quiet.
+# --debug
+
+# Hide info, ok, and warning lines. Errors still print.
 # --quiet
+
+# Reset eligible branches and delete untracked files. Leave this commented.
+# https://github.com/peternickol/github-backup/blob/master/README.md#safety
+# --force-fast-forward
+
+# Setup options
+# https://github.com/peternickol/github-backup/blob/master/README.md#setup
+
+# systemd OnCalendar value. Default when commented: *-*-* 02:00:00
+# Pass setup --force after changing this line.
 # --schedule *-*-* 02:00:00
+
+# Write configuration and skip the service and timer.
+# --no-systemd
+
+# Replace existing units and rewrite /etc/default/github-backup.
+# An uncommented token in that defaults file is kept. This file's
+# uncommented lines are kept too. Leave this commented.
+# --force
+
+# Install and update options
+# https://github.com/peternickol/github-backup/blob/master/README.md#install
+
+# Install or update the command and leave Bash completion alone.
+# --no-completion
+
+# Install Bash completion and exit.
+# --completion-only
+
+# Remove Bash completion and exit.
+# --uninstall-completion
+
+# Uninstall options
+# https://github.com/peternickol/github-backup/blob/master/README.md#uninstall
+
+# Also remove /etc/default/github-backup and this option file.
+# Repositories, the base directory, and the log stay.
+# --purge-config
+
+# Command flags
+# Leave these commented. Uncommenting one would change every run,
+# including the timer. Pass them on the command line instead.
+# https://github.com/peternickol/github-backup/blob/master/README.md#commands
+
+# Switch this run to list-repos. Nothing is cloned.
+# https://github.com/peternickol/github-backup/blob/master/README.md#list-repos
+# --list-repos USER
+
+# Read a different option file and ignore this one. Do not uncomment.
+# Pass --config FILE on the command line, as with sshd -f.
+# --config FILE
+
+# Older command forms. Do not uncomment.
+# --install
+# --update
+# --uninstall
+
+# Print the version, or this program's help, and exit. Do not uncomment.
+# https://github.com/peternickol/github-backup/blob/master/README.md#version-and-help
+# --version
+# --help
+
+# Short forms of --quiet, --force, --version, and --help. Do not uncomment.
+# -q
+# -f
+# -V
+# -h

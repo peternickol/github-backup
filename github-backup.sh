@@ -8,12 +8,13 @@
 
 set -euo pipefail
 
-VERSION="1.4.1"
+VERSION="1.4.3"
 PROGRAM="github-backup"
 INSTALL_PATH="${GITHUB_BACKUP_INSTALL_PATH:-/usr/local/bin/github-backup}"
 UPDATE_URL="${GITHUB_BACKUP_UPDATE_URL:-https://raw.githubusercontent.com/peternickol/github-backup/master/github-backup.sh}"
 SYSTEMD_DIR="${GITHUB_BACKUP_SYSTEMD_DIR:-/etc/systemd/system}"
 DEFAULTS_FILE="${GITHUB_BACKUP_DEFAULTS_FILE:-/etc/default/github-backup}"
+CONFIG_PATH="${GITHUB_BACKUP_CONFIG:-/etc/github-backup/github-backup.conf}"
 API_URL="${GITHUB_BACKUP_API_URL:-https://api.github.com}"
 SYSTEMCTL_BIN="${GITHUB_BACKUP_SYSTEMCTL:-systemctl}"
 SERVICE_NAME="github-backup.service"
@@ -40,7 +41,11 @@ NOTIFY_URL=""
 TOKEN=""
 SKIP_LIST_RAW=""
 CONFIG_FILE=""
+CONFIG_FROM_CLI=0
 OPTION_ORIGIN=""
+APPLYING_CLI=0
+CLI_SKIP_RESET=0
+SAVED_SKIP_RAW=""
 SCHEDULE="*-*-* 02:00:00"
 PROFILE_USERNAME=""
 LIST_USERNAME=""
@@ -218,6 +223,9 @@ Repository options:
                            upstream, a non-GitHub remote, and a Git operation
                            already in progress.
   --log-file FILE          Log path for this run (default: /var/log/github-backup.log)
+  --token TOKEN            GitHub token. Save it in the conf file so a later
+                           run does not need it again. setup does not copy it
+                           into the defaults file.
 
 Setup options:
   --schedule CALENDAR      systemd OnCalendar value (default: *-*-* 02:00:00).
@@ -225,7 +233,7 @@ Setup options:
   --no-systemd             Write configuration and skip the service and timer
   --force, -f              Replace existing units and rewrite the configuration.
                            An uncommented GITHUB_BACKUP_TOKEN= line is kept.
-                           A token in the environment is never written.
+                           A token from --token or the environment is never written.
 
 Install options:
   --force, -f              Overwrite an existing binary or completion file
@@ -234,22 +242,27 @@ Install options:
   --uninstall-completion   Remove Bash completion and exit
 
 Uninstall options:
-  --purge-config           Also remove $DEFAULTS_FILE.
+  --purge-config           Also remove $DEFAULTS_FILE and $CONFIG_PATH.
                            Repositories, the base directory, and the log stay.
 
 Other:
-  --config FILE            Read options from FILE instead of repeating them.
-                           One option per line. A flag on the command line
-                           overrides the same option in the file.
+  --config FILE            Use FILE instead of $CONFIG_PATH. The file is
+                           read first. A flag on the command line replaces
+                           the same option from the file.
   -V, --version            Show version
   -h, --help               Show this help
 
 Flags may appear before or after the command. These older forms still work:
 --profile USER, --list-repos USER, --install, --update, and --uninstall.
 An option value cannot be empty or start with "-". --skip adds names to the
-configured skip list. --skip-list replaces that configured list for this run.
-Pass every option on the command line, or pass --config FILE and store those
-options in the file. The command itself stays on the command line.
+skip list from the environment or the defaults file. --skip-list replaces
+that list for this run. On the command line, either one replaces skip names
+from the conf file.
+setup installs $CONFIG_PATH. The command reads that file first. Remove the
+leading "# " from a line to set it. A command-line flag replaces the same
+option. Pass --config FILE to use a different file. Put --token in the
+option file so the GitHub token does not have to be supplied again. The
+command itself stays on the command line.
 
 --quiet also hides the enabled/active word from is-enabled and is-active, and
 hides systemctl output from enable, disable, start, stop, restart, and status.
@@ -270,8 +283,7 @@ The backup command is: $PROGRAM sync
 Examples:
   github-backup
   github-backup sync --base-dir ~/src --dry-run --verbose
-  github-backup sync --config /etc/github-backup/backup.conf
-  github-backup sync --config /etc/github-backup/backup.conf --dry-run
+  github-backup sync --config /etc/github-backup/github-backup.conf --dry-run
   github-backup sync --base-dir ~/src --skip repo-one --skip-list repo-two,repo-three
   github-backup sync --base-dir ~/src --force-fast-forward --dry-run
   github-backup profile octocat --base-dir /mnt/nas/github/octocat --dry-run
@@ -384,7 +396,7 @@ append_csv_skip() {
 
 option_takes_value() {
     case "$1" in
-        --base-dir|--profile|--list-repos|--skip|--skip-list|--log-file|--schedule|--config)
+        --base-dir|--profile|--list-repos|--skip|--skip-list|--log-file|--schedule|--config|--token)
             return 0
             ;;
         *)
@@ -427,10 +439,16 @@ apply_saved_option() {
             ;;
         --skip)
             need_value "$option" "$value"
+            if [[ "$APPLYING_CLI" -eq 1 ]]; then
+                reset_skips_for_command_line
+            fi
             append_skip_name "$value"
             ;;
         --skip-list)
             need_value "$option" "$value"
+            if [[ "$APPLYING_CLI" -eq 1 ]]; then
+                reset_skips_for_command_line
+            fi
             SKIP_LIST_RAW="$value"
             ;;
         --log-file)
@@ -440,6 +458,10 @@ apply_saved_option() {
         --schedule)
             need_value "$option" "$value"
             SCHEDULE="$value"
+            ;;
+        --token)
+            need_value "$option" "$value"
+            TOKEN="$value"
             ;;
         --dry-run|--verbose|--debug|-q|--quiet|--force-fast-forward|--force|-f|--no-completion|--completion-only|--uninstall-completion|--no-systemd|--purge-config|--install|--update|--uninstall|-V|--version|-h|--help)
             if [[ "$has_value" -eq 1 ]]; then
@@ -562,8 +584,16 @@ load_option_file() {
     OPTION_ORIGIN=""
 }
 
+reset_skips_for_command_line() {
+    [[ "$CLI_SKIP_RESET" -eq 1 ]] && return 0
+    CLI_SKIP_RESET=1
+    SKIP_LIST=()
+    SKIP_LIST_RAW="$SAVED_SKIP_RAW"
+}
+
 parse_command_line() {
     local option="" value=""
+    APPLYING_CLI=1
     while [[ $# -gt 0 ]]; do
         case "$1" in
             sync) COMMAND="sync"; shift ;;
@@ -593,7 +623,7 @@ parse_command_line() {
             --config=*)
                 shift
                 ;;
-            --base-dir|--profile|--list-repos|--skip|--skip-list|--log-file|--schedule)
+            --base-dir|--profile|--list-repos|--skip|--skip-list|--log-file|--schedule|--token)
                 need_value "$1" "${2:-}"
                 apply_saved_option "$1" 1 "$2"
                 shift 2
@@ -615,13 +645,21 @@ parse_command_line() {
                 ;;
         esac
     done
+    APPLYING_CLI=0
 }
 
 parse_args() {
     local -a saved=("$@")
+    SAVED_SKIP_RAW="$SKIP_LIST_RAW"
     find_config_file "${saved[@]}"
     if [[ -n "$CONFIG_FILE" ]]; then
+        CONFIG_FROM_CLI=1
         load_option_file "$CONFIG_FILE"
+    elif [[ -f "$CONFIG_PATH" && -r "$CONFIG_PATH" ]]; then
+        CONFIG_FILE="$CONFIG_PATH"
+        load_option_file "$CONFIG_FILE"
+    elif [[ -e "$CONFIG_PATH" ]]; then
+        warn "Option file is not a readable file: $CONFIG_PATH"
     fi
     parse_command_line "${saved[@]}"
     if [[ -n "$SKIP_LIST_RAW" ]]; then
@@ -1351,7 +1389,7 @@ _github_backup() {
         prev="${COMP_WORDS[COMP_CWORD-1]}"
     fi
     local commands="sync profile list-repos setup install update uninstall enable disable start stop restart is-enabled is-active status journal"
-    local options="--base-dir --profile --list-repos --skip --skip-list --dry-run --verbose --debug --quiet --force-fast-forward --log-file --schedule --config --no-systemd --purge-config --force --no-completion --completion-only --uninstall-completion --version --help -q -f -V -h"
+    local options="--base-dir --profile --list-repos --skip --skip-list --dry-run --verbose --debug --quiet --force-fast-forward --log-file --schedule --config --token --no-systemd --purge-config --force --no-completion --completion-only --uninstall-completion --version --help -q -f -V -h"
     if [[ "$prev" == "--base-dir" || "$prev" == "--log-file" ]]; then
         COMPREPLY=( $(compgen -d -- "$cur") )
         return 0
@@ -1498,6 +1536,221 @@ write_defaults_file() {
     ok "Installed configuration: $DEFAULTS_FILE"
 }
 
+option_file_template() {
+    cat <<'EOF'
+# This is the github-backup system-wide configuration file. See the full
+# README:
+# https://github.com/peternickol/github-backup/blob/master/README.md
+#
+# The strategy matches sshd_config: each option is shown with a sample
+# value, commented out. Remove the leading "# " to set it. Uncommented
+# options override the default. This file is read first. A command-line
+# flag replaces the same option. A setting neither one mentions comes
+# from the environment, then /etc/default/github-backup, then the
+# built-in default.
+#
+# The command stays on the command line:
+#   github-backup sync
+#   github-backup profile USER
+#   github-backup setup
+# https://github.com/peternickol/github-backup/blob/master/README.md#commands
+#
+# What a run does
+#   Fast-forward clean GitHub checkouts. With --profile, also clone
+#   repositories that are not on disk yet. Dirty, ahead, diverged, and
+#   detached checkouts are skipped. --force-fast-forward is the only
+#   destructive override. Leave that line commented.
+# https://github.com/peternickol/github-backup/blob/master/README.md#safety
+#
+# Token
+#   Uncomment --token and paste a GitHub token. Keep this file mode 600.
+#   Do not commit the file after the token is filled in. setup does not
+#   copy the token into /etc/default/github-backup. A token on the command
+#   line replaces this one and is kept in shell history.
+# https://github.com/peternickol/github-backup/blob/master/README.md#configuration
+#
+# Mail and the run report
+#   These are not options in this file. Set them in /etc/default/github-backup:
+#     GITHUB_BACKUP_EMAIL=you@example.com
+#     GITHUB_BACKUP_NOTIFY_URL=https://formester.com/f/yourFormId
+#   Mail is sent only when a repository fails. The form receives one report
+#   after each real sync or profile. Turn off reCAPTCHA on that form.
+# https://github.com/peternickol/github-backup/blob/master/README.md#run-report
+#
+# Schedule
+#   Uncomment --schedule, then run: github-backup setup --force
+#   The timer default is *-*-* 02:00:00. The timer may wait up to 30 minutes.
+# https://github.com/peternickol/github-backup/blob/master/README.md#schedule
+
+# Repository options
+# https://github.com/peternickol/github-backup/blob/master/README.md#options
+
+# Directory to crawl, or where a profile is cloned.
+# Default when commented: $HOME/github-backup
+# --base-dir /mnt/nas/github
+
+# On sync, clone and update this user or organization. On setup, save it.
+# https://github.com/peternickol/github-backup/blob/master/README.md#profile
+# --profile YOUR_GITHUB_USERNAME
+
+# Skip one repository directory name. Repeat the line to skip more than one.
+# Names are added to the list from the environment or the defaults file.
+# A --skip or --skip-list on the command line replaces these names.
+# --skip repo-one
+# --skip repo-two
+
+# Replace the skip list from the environment or the defaults file.
+# On setup --force, this also replaces the saved list.
+# --skip-list repo-one,repo-two
+
+# Log path. Default when commented: /var/log/github-backup.log
+# --log-file /var/log/github-backup.log
+
+# GitHub token for private repositories. This file is the saved credential.
+# --token github_pat_...
+
+# Show what the recorded upstream would do. Does not fetch or merge.
+# Leave this commented for a real backup. There is no --no-dry-run.
+# https://github.com/peternickol/github-backup/blob/master/README.md#sync
+# --dry-run
+
+# Also print repositories that are already current.
+# --verbose
+
+# Print each fetch target on stderr, even with --quiet.
+# --debug
+
+# Hide info, ok, and warning lines. Errors still print.
+# --quiet
+
+# Reset eligible branches and delete untracked files. Leave this commented.
+# https://github.com/peternickol/github-backup/blob/master/README.md#safety
+# --force-fast-forward
+
+# Setup options
+# https://github.com/peternickol/github-backup/blob/master/README.md#setup
+
+# systemd OnCalendar value. Default when commented: *-*-* 02:00:00
+# Pass setup --force after changing this line.
+# --schedule *-*-* 02:00:00
+
+# Write configuration and skip the service and timer.
+# --no-systemd
+
+# Replace existing units and rewrite /etc/default/github-backup.
+# An uncommented token in that defaults file is kept. This file's
+# uncommented lines are kept too. Leave this commented.
+# --force
+
+# Install and update options
+# https://github.com/peternickol/github-backup/blob/master/README.md#install
+
+# Install or update the command and leave Bash completion alone.
+# --no-completion
+
+# Install Bash completion and exit.
+# --completion-only
+
+# Remove Bash completion and exit.
+# --uninstall-completion
+
+# Uninstall options
+# https://github.com/peternickol/github-backup/blob/master/README.md#uninstall
+
+# Also remove /etc/default/github-backup and this option file.
+# Repositories, the base directory, and the log stay.
+# --purge-config
+
+# Command flags
+# Leave these commented. Uncommenting one would change every run,
+# including the timer. Pass them on the command line instead.
+# https://github.com/peternickol/github-backup/blob/master/README.md#commands
+
+# Switch this run to list-repos. Nothing is cloned.
+# https://github.com/peternickol/github-backup/blob/master/README.md#list-repos
+# --list-repos USER
+
+# Read a different option file and ignore this one. Do not uncomment.
+# Pass --config FILE on the command line, as with sshd -f.
+# --config FILE
+
+# Older command forms. Do not uncomment.
+# --install
+# --update
+# --uninstall
+
+# Print the version, or this program's help, and exit. Do not uncomment.
+# https://github.com/peternickol/github-backup/blob/master/README.md#version-and-help
+# --version
+# --help
+
+# Short forms of --quiet, --force, --version, and --help. Do not uncomment.
+# -q
+# -f
+# -V
+# -h
+EOF
+}
+
+preserved_option_lines() {
+    local line="" trimmed=""
+    [[ -f "$CONFIG_PATH" && -r "$CONFIG_PATH" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        trimmed="$(trim "$line")"
+        [[ -z "$trimmed" || "$trimmed" == \#* ]] && continue
+        case "$trimmed" in
+            --config|--config\ *|--config=*)
+                warn "Ignoring nested --config in $CONFIG_PATH"
+                continue
+                ;;
+        esac
+        printf '%s\n' "$trimmed"
+    done < "$CONFIG_PATH"
+}
+
+format_config_word() {
+    local value="$1"
+    if [[ "$value" =~ ^[A-Za-z0-9_@%+=:,./-]*$ ]]; then
+        printf '%s' "$value"
+        return 0
+    fi
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    printf '"%s"' "$value"
+}
+
+write_option_file() {
+    local directory="" temporary="" kept=""
+    directory="$(dirname "$CONFIG_PATH")"
+    mkdir -p "$directory" || die "Could not create $directory"
+    if [[ -d "$CONFIG_PATH" ]]; then
+        die "$CONFIG_PATH is a directory, expected a file"
+    fi
+    if [[ -e "$CONFIG_PATH" && "$FORCE" -ne 1 ]]; then
+        warn "Option file already exists at $CONFIG_PATH; preserving it"
+        return 0
+    fi
+    if [[ -e "$CONFIG_PATH" && ! -r "$CONFIG_PATH" ]]; then
+        die "Option file is not readable: $CONFIG_PATH"
+    fi
+    kept="$(preserved_option_lines || true)"
+    temporary="$(mktemp "$directory/.github-backup.conf.XXXXXX")" || die "Could not stage option file in $directory"
+    if ! {
+        option_file_template
+        if [[ -n "$kept" ]]; then
+            printf '\n%s\n' '# Settings kept from the previous file.'
+            printf '%s\n' "$kept"
+        fi
+    } > "$temporary"; then
+        rm -f "$temporary"
+        die "Could not write staged option file"
+    fi
+    chmod 0600 "$temporary" || { rm -f "$temporary"; die "Could not secure staged option file"; }
+    mv -f "$temporary" "$CONFIG_PATH" || { rm -f "$temporary"; die "Could not install $CONFIG_PATH"; }
+    ok "Installed option file: $CONFIG_PATH"
+}
+
 systemd_control_available() {
     if [[ -n "${GITHUB_BACKUP_SYSTEMCTL:-}" ]]; then
         [[ -x "$SYSTEMCTL_BIN" ]]
@@ -1541,6 +1794,13 @@ write_systemd_units() {
         return 0
     fi
 
+    local exec_start="$INSTALL_PATH sync" config_word="" service_config="$CONFIG_PATH"
+    if [[ "$CONFIG_FROM_CLI" -eq 1 ]]; then
+        service_config="$CONFIG_FILE"
+    fi
+    config_word="$(format_config_word "$service_config")"
+    exec_start+=" --config $config_word"
+
     service_tmp="$(mktemp "$SYSTEMD_DIR/.github-backup.service.XXXXXX")" || die "Could not stage service unit"
     timer_tmp="$(mktemp "$SYSTEMD_DIR/.github-backup.timer.XXXXXX")" || { rm -f "$service_tmp"; die "Could not stage timer unit"; }
 
@@ -1553,7 +1813,7 @@ write_systemd_units() {
         '[Service]' \
         'Type=oneshot' \
         "EnvironmentFile=-$DEFAULTS_FILE" \
-        "ExecStart=$INSTALL_PATH sync" \
+        "ExecStart=$exec_start" \
         'NoNewPrivileges=true' \
         'PrivateTmp=true' > "$service_tmp"; then
         rm -f "$service_tmp" "$timer_tmp"
@@ -1616,10 +1876,11 @@ prepare_log_file() {
 }
 
 cmd_setup() {
-    require_root "$DEFAULTS_FILE" "$SYSTEMD_DIR" "$(dirname "$LOG_FILE")"
+    require_root "$DEFAULTS_FILE" "$SYSTEMD_DIR" "$(dirname "$LOG_FILE")" "$CONFIG_PATH"
     prepare_base_dir
     prepare_log_file
     write_defaults_file
+    write_option_file
     if [[ "$INSTALL_SYSTEMD" -eq 0 ]]; then
         info "Skipping systemd service and timer (--no-systemd)."
         return 0
@@ -1785,7 +2046,7 @@ cmd_update() {
 
 cmd_uninstall() {
     local completion_dir=""
-    require_root "$INSTALL_PATH" "$SYSTEMD_DIR" "$DEFAULTS_FILE"
+    require_root "$INSTALL_PATH" "$SYSTEMD_DIR" "$DEFAULTS_FILE" "$CONFIG_PATH"
     if systemd_control_available; then
         "$SYSTEMCTL_BIN" disable --now "$TIMER_NAME" >/dev/null 2>&1 || true
     fi
@@ -1805,8 +2066,9 @@ cmd_uninstall() {
         ok "Bash completion removed."
     fi
     if [[ "$PURGE_CONFIG" -eq 1 ]]; then
-        rm -f "$DEFAULTS_FILE"
+        rm -f "$DEFAULTS_FILE" "$CONFIG_PATH"
         ok "Removed configuration: $DEFAULTS_FILE"
+        ok "Removed option file: $CONFIG_PATH"
     fi
     ok "Uninstalled github-backup"
 }
