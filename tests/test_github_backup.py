@@ -1073,18 +1073,10 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
             "--no-systemd",
             "--purge-config",
             "--notify-url https://formester.com/f/yourFormId",
-            "https://github.com/peternickol/github-backup/blob/master/README.md#safety",
-            "https://github.com/peternickol/github-backup/blob/master/README.md#commands",
-            "https://github.com/peternickol/github-backup/blob/master/README.md#options",
-            "https://github.com/peternickol/github-backup/blob/master/README.md#run-report",
-            "https://github.com/peternickol/github-backup/blob/master/README.md#schedule",
-            "https://github.com/peternickol/github-backup/blob/master/README.md#configuration",
-            "https://github.com/peternickol/github-backup/blob/master/README.md#profile",
-            "https://github.com/peternickol/github-backup/blob/master/README.md#setup",
-            "https://github.com/peternickol/github-backup/blob/master/README.md#uninstall",
-            "https://github.com/peternickol/github-backup/blob/master/README.md#sync",
+            "https://github.com/peternickol/github-backup",
         ):
             self.assertIn(option, text)
+        self.assertNotIn("README.md#", text)
         for option in (
             "--no-completion",
             "--completion-only",
@@ -1169,7 +1161,7 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
         )
 
         text = option.read_text()
-        self.assertIn("sshd_config", text)
+        self.assertIn("https://github.com/peternickol/github-backup", text)
         self.assertIn("# Settings kept from the previous file.", text)
         self.assertIn("--token super-secret-token-value", text)
         self.assertIn("--base-dir /kept", text)

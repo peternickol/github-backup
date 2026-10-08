@@ -247,8 +247,9 @@ and does not print a summary. An unknown or empty profile name exits `1`.
 Prepare this machine. The first run creates the base directory, creates the
 log file when it can, writes `/etc/default/github-backup` and
 `/etc/github-backup/github-backup.conf` mode `600`, and installs the systemd
-units. It does not arm the timer. The option file lists the backup and setup
-options, commented out, with a short note and a link to this README. Day to
+units. It does not arm the timer. The option file lists each option
+commented out, with a short note. The top of the file links to the
+repository. Day to
 day, uncomment lines there. Install options stay on the command line.
 
 ```text
@@ -537,8 +538,8 @@ way `sshd -f` selects another `sshd_config`. The command (`sync`, `profile`,
 `setup`, and the rest) stays on the command line. `--config` inside the file
 is rejected.
 
-The installed file lists the backup and setup options, commented out, with a
-short note and a link to the matching section of this README. Commands stay
+The installed file lists each option commented out, with a short note. The
+top of the file links to the repository. Commands stay
 on the command line, including `list-repos`, `--version`, `--help`, and
 `--config`. Install options (`--no-completion`, `--completion-only`,
 `--uninstall-completion`, and `--install`) stay there too.
@@ -575,8 +576,8 @@ asking again. Keep the file mode `600`, and do not commit it after the token
 is filled in. `--token` on the command line replaces the file's token, and
 the shell keeps that command in its history. `setup` does not copy `--token`
 into the defaults file. `--notify-url` in the same file is the Formester
-endpoint. The comments at the top of the option file link
-to [Run report](#run-report). The token is not a field in the run report.
+endpoint. See [Run report](#run-report). The token is not a field in the
+run report.
 
 The service runs `sync`. That reads `/etc/github-backup/github-backup.conf`
 when the file is there, so the unit does not pass `--config`.
@@ -810,7 +811,7 @@ root when their directories are writable by you.
 |---|---|
 | `/usr/local/bin/github-backup` | The command. |
 | `/etc/default/github-backup` | Base directory, profile, log, notify URL, and skip list. Mode `600`. |
-| `/etc/github-backup/github-backup.conf` | Backup and setup options, commented, with a short note and links to this README. Uncomment a line to set it. `--token` and `--notify-url` live here. Install options are not in this file. Mode `600`. |
+| `/etc/github-backup/github-backup.conf` | Each option commented out, with a short note. The top of the file links to the repository. Uncomment a line to set it. `--token` and `--notify-url` live here. Install options are not in this file. Mode `600`. |
 | `/etc/systemd/system/github-backup.service` | Oneshot service. `ExecStart` is `github-backup sync`. It reads `/etc/github-backup/github-backup.conf` when that file exists. `setup --config FILE` uses `github-backup sync --config FILE` when `FILE` is a different path. It runs as root. |
 | `/etc/systemd/system/github-backup.timer` | Calendar timer for that service. |
 | `/var/log/github-backup.log` | Default log. `setup` creates it mode `640` when run as root. |

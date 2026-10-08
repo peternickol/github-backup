@@ -1575,127 +1575,61 @@ write_defaults_file() {
 
 option_file_template() {
     cat <<'EOF'
-# This is the github-backup system-wide configuration file. See the full
-# README:
-# https://github.com/peternickol/github-backup/blob/master/README.md
+# github-backup configuration.
+# https://github.com/peternickol/github-backup
 #
-# The strategy matches sshd_config: each option is shown with a sample
-# value, commented out. Remove the leading "# " to set it. Uncommented
-# options override the default. This file is read first. A command-line
-# flag replaces the same option. A setting neither one mentions comes
-# from the environment, then /etc/default/github-backup, then the
-# built-in default.
-#
-# The command stays on the command line:
-#   github-backup sync
-#   github-backup profile USER
-#   github-backup setup
-# https://github.com/peternickol/github-backup/blob/master/README.md#commands
-#
-# What a run does
-#   Fast-forward clean GitHub checkouts. A token downloads every
-#   repository that account owns. --profile selects another account.
-#   Dirty, ahead, diverged, and detached checkouts are skipped.
-#   --force-fast-forward is the only destructive override. Leave that
-#   line commented.
-# https://github.com/peternickol/github-backup/blob/master/README.md#safety
-#
-# Token
-#   Uncomment --token and paste a GitHub token. sync then downloads every
-#   repository that account owns into the base directory. Keep this file
-#   mode 600. Do not commit the file after the token is filled in. setup
-#   does not copy the token into /etc/default/github-backup. A token on
-#   the command line replaces this one and is kept in shell history.
-# https://github.com/peternickol/github-backup/blob/master/README.md#configuration
-#
-# Run report
-#   The only notification is a form POST. Uncomment --notify-url and paste
-#   the Formester endpoint. A real sync or profile submits after every run.
-#   The log names every repository and what happened to it. A fast-forward
-#   includes git's diffstat. Uncomment --notify-on-error to submit only
-#   when a repository fails or the run stops early. A dry run does not
-#   submit. Turn off reCAPTCHA.
-# https://github.com/peternickol/github-backup/blob/master/README.md#run-report
-#
-# Schedule
-#   Uncomment --schedule, then run: github-backup setup --force
-#   The timer default is *-*-* 02:00:00. The timer may wait up to 30 minutes.
-# https://github.com/peternickol/github-backup/blob/master/README.md#schedule
+# Remove the leading "# " to set an option.
 
-# Repository options
-# https://github.com/peternickol/github-backup/blob/master/README.md#options
-
-# Directory to crawl, or where a profile is cloned.
-# Default when commented: $HOME/github-backup
+# Directory to crawl, or where a profile is cloned. Default: $HOME/github-backup
 # --base-dir /mnt/nas/github
 
-# On sync, clone and update this user or organization instead of the
-# account that owns the token. On setup, save it.
-# https://github.com/peternickol/github-backup/blob/master/README.md#profile
+# User or organization to clone instead of the account that owns the token.
 # --profile YOUR_GITHUB_USERNAME
 
-# Skip one repository directory name. Repeat the line to skip more than one.
-# Names are added to the list from the environment or the defaults file.
-# A --skip or --skip-list on the command line replaces these names.
+# Skip one repository name. Repeat the line to skip another.
 # --skip repo-one
 # --skip repo-two
 
-# Replace the skip list from the environment or the defaults file.
-# On setup --force, this also replaces the saved list.
+# Replace the skip list.
 # --skip-list repo-one,repo-two
 
-# Log path. Default when commented: /var/log/github-backup.log
+# Log path. Default: /var/log/github-backup.log
 # --log-file /var/log/github-backup.log
 
-# GitHub token. With no --profile, sync downloads the account that owns it.
+# GitHub token. With no --profile, sync downloads the repositories that account owns.
 # --token github_pat_...
 
-# Show what the recorded upstream would do. Does not fetch or merge.
-# Leave this commented for a real backup. There is no --no-dry-run.
-# https://github.com/peternickol/github-backup/blob/master/README.md#sync
+# Show the plan already recorded. Does not fetch or merge. Leave commented.
 # --dry-run
 
 # Also print repositories that are already current.
 # --verbose
 
-# Print each fetch target on stderr, even with --quiet.
+# Print each fetch target on stderr.
 # --debug
 
 # Hide info, ok, and warning lines. Errors still print.
 # --quiet
 
-# Formester endpoint. A real sync or profile submits the run report here.
-# https://github.com/peternickol/github-backup/blob/master/README.md#run-report
+# Formester endpoint for the run report.
 # --notify-url https://formester.com/f/yourFormId
 
-# Submit the form report only when a repository fails or the run stops early.
-# The default submits after every real sync or profile.
+# Submit the run report only when a repository fails or the run stops early.
 # --notify-on-error
 
-# Reset eligible branches and delete untracked files. Leave this commented.
-# https://github.com/peternickol/github-backup/blob/master/README.md#safety
+# Reset eligible branches and delete untracked files. Leave commented.
 # --force-fast-forward
 
-# Setup options
-# https://github.com/peternickol/github-backup/blob/master/README.md#setup
-
-# systemd OnCalendar value. Default when commented: *-*-* 02:00:00
-# Pass setup --force after changing this line.
+# Timer calendar. Default: *-*-* 02:00:00. Then run setup --force.
 # --schedule *-*-* 02:00:00
 
 # Write configuration and skip the service and timer.
 # --no-systemd
 
-# Replace existing units and rewrite /etc/default/github-backup.
-# An uncommented token in that defaults file is kept. This file's
-# uncommented lines are kept too. Leave this commented.
+# On setup, replace units and rewrite the defaults file. Leave commented.
 # --force
 
-# Uninstall options
-# https://github.com/peternickol/github-backup/blob/master/README.md#uninstall
-
-# Also remove /etc/default/github-backup and this option file.
-# Repositories, the base directory, and the log stay.
+# On uninstall, also remove the defaults file and this file.
 # --purge-config
 EOF
 }
