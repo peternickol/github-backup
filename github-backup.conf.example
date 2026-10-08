@@ -1,0 +1,17 @@
+# Options for github-backup. The command stays on the command line:
+#
+#   github-backup sync --config /etc/github-backup/backup.conf
+#   github-backup sync --config /etc/github-backup/backup.conf --dry-run
+#
+# One option per line. Blank lines and lines that start with # are ignored.
+# A flag written here is on for every run that uses this file.
+# A flag on the command line overrides the same option from this file.
+# Do not put the GitHub token, the mail address, or the run-report URL here.
+
+--base-dir /mnt/nas/github
+--log-file /var/log/github-backup.log
+# --profile YOUR_GITHUB_USERNAME
+# --skip repo-one
+# --skip repo-two
+# --quiet
+# --schedule *-*-* 02:00:00

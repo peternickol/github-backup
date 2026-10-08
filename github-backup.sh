@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-VERSION="1.2.2"
+VERSION="1.4.0"
 PROGRAM="github-backup"
 INSTALL_PATH="${GITHUB_BACKUP_INSTALL_PATH:-/usr/local/bin/github-backup}"
 UPDATE_URL="${GITHUB_BACKUP_UPDATE_URL:-https://raw.githubusercontent.com/peternickol/github-backup/master/github-backup.sh}"
@@ -36,8 +36,11 @@ BASE_DIR=""
 PROFILE=""
 LOG_FILE=""
 EMAIL_TO=""
+NOTIFY_URL=""
 TOKEN=""
 SKIP_LIST_RAW=""
+CONFIG_FILE=""
+OPTION_ORIGIN=""
 SCHEDULE="*-*-* 02:00:00"
 PROFILE_USERNAME=""
 LIST_USERNAME=""
@@ -51,6 +54,12 @@ skipped_count=0
 failed_count=0
 LOG_WARNED=0
 LOCK_ACQUIRED=0
+REPORT_RUN=0
+REPORT_FINISHED=0
+REPORT_SUBMITTED=0
+REPORT_ABORTED=0
+REPORT_NOTES=""
+REPORT_NOTE_COUNT=0
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     C_INFO=$'\e[36m'
@@ -75,7 +84,14 @@ warn() {
     printf '%s[WARN]%s %s\n' "$C_WARN" "$C_RESET" "$*" >&2
 }
 error() { printf '%s[ERROR]%s %s\n' "$C_ERR" "$C_RESET" "$*" >&2; }
-die() { error "$*"; exit 1; }
+die() {
+    error "$*"
+    if [[ "$REPORT_RUN" -eq 1 ]]; then
+        REPORT_ABORTED=1
+        append_report_note "$*"
+    fi
+    exit 1
+}
 die_code() {
     local code="$1"
     shift
@@ -109,8 +125,16 @@ need_value() {
     local option="$1"
     local value="${2:-}"
     if [[ -z "$value" || "$value" == -* ]]; then
-        error "$option requires a value."
+        error_option "$option requires a value."
         usage 1
+    fi
+}
+
+error_option() {
+    if [[ -n "$OPTION_ORIGIN" ]]; then
+        error "$OPTION_ORIGIN: $*"
+    else
+        error "$*"
     fi
 }
 
@@ -214,6 +238,9 @@ Uninstall options:
                            Repositories, the base directory, and the log stay.
 
 Other:
+  --config FILE            Read options from FILE instead of repeating them.
+                           One option per line. A flag on the command line
+                           overrides the same option in the file.
   -V, --version            Show version
   -h, --help               Show this help
 
@@ -221,6 +248,8 @@ Flags may appear before or after the command. These older forms still work:
 --profile USER, --list-repos USER, --install, --update, and --uninstall.
 An option value cannot be empty or start with "-". --skip adds names to the
 configured skip list. --skip-list replaces that configured list for this run.
+Pass every option on the command line, or pass --config FILE and store those
+options in the file. The command itself stays on the command line.
 
 --quiet also hides the enabled/active word from is-enabled and is-active, and
 hides systemctl output from enable, disable, start, stop, restart, and status.
@@ -229,12 +258,20 @@ The exit status stays. journal still follows the log.
 Nested checkouts and submodules are left alone. Clean branches behind GitHub
 are fast-forwarded. Dirty, ahead, and diverged branches are skipped.
 
+Run report:
+  When GITHUB_BACKUP_NOTIFY_URL is an http or https form endpoint, sync and
+  profile POST one report after a real run. A dry run does not. The fields are
+  _subject, host, program, status, summary, and log. A failed POST is a warning
+  and does not change the exit status. The GitHub token is not included.
+
 With no arguments, this help is printed and nothing is backed up.
 The backup command is: $PROGRAM sync
 
 Examples:
   github-backup
   github-backup sync --base-dir ~/src --dry-run --verbose
+  github-backup sync --config /etc/github-backup/backup.conf
+  github-backup sync --config /etc/github-backup/backup.conf --dry-run
   github-backup sync --base-dir ~/src --skip repo-one --skip-list repo-two,repo-three
   github-backup sync --base-dir ~/src --force-fast-forward --dry-run
   github-backup profile octocat --base-dir /mnt/nas/github/octocat --dry-run
@@ -288,7 +325,7 @@ load_file_cfg() {
         key="$(trim "${line%%=*}")"
         value="$(unquote_value "${line#*=}")"
         case "$key" in
-            GITHUB_BACKUP_BASE_DIR|GITHUB_BACKUP_PROFILE|GITHUB_BACKUP_LOG_FILE|GITHUB_BACKUP_EMAIL|GITHUB_BACKUP_TOKEN|GITHUB_BACKUP_SKIP_LIST)
+            GITHUB_BACKUP_BASE_DIR|GITHUB_BACKUP_PROFILE|GITHUB_BACKUP_LOG_FILE|GITHUB_BACKUP_EMAIL|GITHUB_BACKUP_NOTIFY_URL|GITHUB_BACKUP_TOKEN|GITHUB_BACKUP_SKIP_LIST)
                 FILE_CFG["$key"]="$value"
                 ;;
         esac
@@ -313,6 +350,7 @@ apply_config() {
     PROFILE="$(config_value GITHUB_BACKUP_PROFILE "")"
     LOG_FILE="$(config_value GITHUB_BACKUP_LOG_FILE "/var/log/github-backup.log")"
     EMAIL_TO="$(config_value GITHUB_BACKUP_EMAIL "")"
+    NOTIFY_URL="$(config_value GITHUB_BACKUP_NOTIFY_URL "")"
     if [[ -n "${GITHUB_BACKUP_TOKEN+x}" ]]; then
         TOKEN="$GITHUB_BACKUP_TOKEN"
     elif [[ -n "${GH_TOKEN+x}" ]]; then
@@ -344,7 +382,188 @@ append_csv_skip() {
     done
 }
 
-parse_args() {
+option_takes_value() {
+    case "$1" in
+        --base-dir|--profile|--list-repos|--skip|--skip-list|--log-file|--schedule|--config)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+strip_wrapping_quotes() {
+    local value="$1"
+    if [[ ${#value} -ge 2 && "$value" == \"*\" ]]; then
+        value="${value:1:${#value}-2}"
+    elif [[ ${#value} -ge 2 && "$value" == \'*\' ]]; then
+        value="${value:1:${#value}-2}"
+    fi
+    printf '%s' "$value"
+}
+
+apply_saved_option() {
+    local option="$1"
+    local has_value="$2"
+    local value="${3-}"
+    case "$option" in
+        --profile)
+            need_value "$option" "$value"
+            PROFILE="$value"
+            PROFILE_USERNAME="$value"
+            if [[ "$COMMAND" == "sync" ]]; then
+                COMMAND="profile"
+            fi
+            ;;
+        --list-repos)
+            need_value "$option" "$value"
+            COMMAND="list-repos"
+            LIST_USERNAME="$value"
+            ;;
+        --base-dir)
+            need_value "$option" "$value"
+            BASE_DIR="$value"
+            ;;
+        --skip)
+            need_value "$option" "$value"
+            append_skip_name "$value"
+            ;;
+        --skip-list)
+            need_value "$option" "$value"
+            SKIP_LIST_RAW="$value"
+            ;;
+        --log-file)
+            need_value "$option" "$value"
+            LOG_FILE="$value"
+            ;;
+        --schedule)
+            need_value "$option" "$value"
+            SCHEDULE="$value"
+            ;;
+        --dry-run|--verbose|--debug|-q|--quiet|--force-fast-forward|--force|-f|--no-completion|--completion-only|--uninstall-completion|--no-systemd|--purge-config|--install|--update|--uninstall|-V|--version|-h|--help)
+            if [[ "$has_value" -eq 1 ]]; then
+                error_option "$option does not take a value."
+                usage 1
+            fi
+            case "$option" in
+                --dry-run) DRY_RUN=1 ;;
+                --verbose) VERBOSE=1 ;;
+                --debug) DEBUG=1 ;;
+                -q|--quiet) QUIET=1 ;;
+                --force-fast-forward) FORCE_FAST_FORWARD=1 ;;
+                --force|-f) FORCE=1 ;;
+                --no-completion) NO_COMPLETION=1 ;;
+                --completion-only) COMPLETION_ONLY=1 ;;
+                --uninstall-completion) UNINSTALL_COMPLETION=1 ;;
+                --no-systemd) INSTALL_SYSTEMD=0 ;;
+                --purge-config) PURGE_CONFIG=1 ;;
+                --install) COMMAND="install" ;;
+                --update) COMMAND="update" ;;
+                --uninstall) COMMAND="uninstall" ;;
+                -V|--version) printf '%s %s\n' "$PROGRAM" "$VERSION"; exit 0 ;;
+                -h|--help) usage ;;
+            esac
+            ;;
+        *)
+            error_option "Unknown argument: $option"
+            usage 1
+            ;;
+    esac
+}
+
+find_config_file() {
+    local -a args=("$@")
+    local index=0 token="" option="" value=""
+    CONFIG_FILE=""
+    while [[ "$index" -lt "${#args[@]}" ]]; do
+        token="${args[$index]}"
+        if [[ "$token" == "--config" ]]; then
+            value="${args[$((index + 1))]:-}"
+            need_value "--config" "$value"
+            if [[ -n "$CONFIG_FILE" ]]; then
+                error "--config was given more than once."
+                usage 1
+            fi
+            CONFIG_FILE="$value"
+            index=$((index + 2))
+            continue
+        fi
+        if [[ "$token" == --config=* ]]; then
+            value="${token#--config=}"
+            need_value "--config" "$value"
+            if [[ -n "$CONFIG_FILE" ]]; then
+                error "--config was given more than once."
+                usage 1
+            fi
+            CONFIG_FILE="$value"
+            index=$((index + 1))
+            continue
+        fi
+        if [[ "$token" == --*=* ]]; then
+            option="${token%%=*}"
+            if option_takes_value "$option"; then
+                index=$((index + 1))
+                continue
+            fi
+        fi
+        if option_takes_value "$token"; then
+            index=$((index + 2))
+            continue
+        fi
+        index=$((index + 1))
+    done
+}
+
+load_option_file() {
+    local file="$1"
+    local line="" trimmed="" option="" value="" number=0
+    if [[ ! -f "$file" || ! -r "$file" ]]; then
+        die "Configuration file is not a readable file: $file"
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        number=$((number + 1))
+        line="${line%$'\r'}"
+        trimmed="$(trim "$line")"
+        [[ -z "$trimmed" || "$trimmed" == \#* ]] && continue
+        OPTION_ORIGIN="$file:$number"
+        if [[ "$trimmed" != -* ]]; then
+            error_option "expected an option, found: $trimmed"
+            usage 1
+        fi
+        if [[ "$trimmed" == "--config" || "$trimmed" == --config=* || "$trimmed" == "--config "* ]]; then
+            error_option "--config cannot be nested."
+            usage 1
+        fi
+        option="${trimmed%%[[:space:]]*}"
+        if [[ "$option" == --*=* ]]; then
+            value="$(strip_wrapping_quotes "$(trim "${option#*=}")")"
+            option="${option%%=*}"
+            if ! option_takes_value "$option"; then
+                error_option "$option does not take a value."
+                usage 1
+            fi
+            apply_saved_option "$option" 1 "$value"
+        elif [[ "$option" == "$trimmed" ]]; then
+            if option_takes_value "$option"; then
+                error_option "$option requires a value."
+                usage 1
+            fi
+            apply_saved_option "$option" 0
+        else
+            value="$(strip_wrapping_quotes "$(trim "${trimmed#"$option"}")")"
+            if ! option_takes_value "$option"; then
+                error_option "$option does not take a value."
+                usage 1
+            fi
+            apply_saved_option "$option" 1 "$value"
+        fi
+    done < "$file"
+    OPTION_ORIGIN=""
+}
+
+parse_command_line() {
+    local option="" value=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             sync) COMMAND="sync"; shift ;;
@@ -368,63 +587,43 @@ parse_args() {
                 COMMAND="$1"
                 shift
                 ;;
-            --profile)
+            --config)
+                shift 2
+                ;;
+            --config=*)
+                shift
+                ;;
+            --base-dir|--profile|--list-repos|--skip|--skip-list|--log-file|--schedule)
                 need_value "$1" "${2:-}"
-                PROFILE="$2"
-                PROFILE_USERNAME="$2"
-                if [[ "$COMMAND" == "sync" ]]; then
-                    COMMAND="profile"
+                apply_saved_option "$1" 1 "$2"
+                shift 2
+                ;;
+            *)
+                if [[ "$1" == --*=* ]]; then
+                    option="${1%%=*}"
+                    value="$(strip_wrapping_quotes "${1#*=}")"
+                    if option_takes_value "$option"; then
+                        apply_saved_option "$option" 1 "$value"
+                    else
+                        error_option "$option does not take a value."
+                        usage 1
+                    fi
+                else
+                    apply_saved_option "$1" 0
                 fi
-                shift 2
+                shift
                 ;;
-            --list-repos)
-                need_value "$1" "${2:-}"
-                COMMAND="list-repos"
-                LIST_USERNAME="$2"
-                shift 2
-                ;;
-            --base-dir)
-                need_value "$1" "${2:-}"
-                BASE_DIR="$2"
-                shift 2
-                ;;
-            --skip)
-                need_value "$1" "${2:-}"
-                append_skip_name "$2"
-                shift 2
-                ;;
-            --skip-list)
-                need_value "$1" "${2:-}"
-                SKIP_LIST_RAW="$2"
-                shift 2
-                ;;
-            --log-file)
-                need_value "$1" "${2:-}"
-                LOG_FILE="$2"
-                shift 2
-                ;;
-            --schedule)
-                need_value "$1" "${2:-}"
-                SCHEDULE="$2"
-                shift 2
-                ;;
-            --dry-run) DRY_RUN=1; shift ;;
-            --verbose) VERBOSE=1; shift ;;
-            --debug) DEBUG=1; shift ;;
-            -q|--quiet) QUIET=1; shift ;;
-            --force-fast-forward) FORCE_FAST_FORWARD=1; shift ;;
-            --force|-f) FORCE=1; shift ;;
-            --no-completion) NO_COMPLETION=1; shift ;;
-            --completion-only) COMPLETION_ONLY=1; shift ;;
-            --uninstall-completion) UNINSTALL_COMPLETION=1; shift ;;
-            --no-systemd) INSTALL_SYSTEMD=0; shift ;;
-            --purge-config) PURGE_CONFIG=1; shift ;;
-            -V|--version) printf '%s %s\n' "$PROGRAM" "$VERSION"; exit 0 ;;
-            -h|--help) usage ;;
-            *) error "Unknown argument: $1"; usage 1 ;;
         esac
     done
+}
 
+parse_args() {
+    local -a saved=("$@")
+    find_config_file "${saved[@]}"
+    if [[ -n "$CONFIG_FILE" ]]; then
+        load_option_file "$CONFIG_FILE"
+    fi
+    parse_command_line "${saved[@]}"
     if [[ -n "$SKIP_LIST_RAW" ]]; then
         append_csv_skip "$SKIP_LIST_RAW"
     fi
@@ -532,6 +731,7 @@ record_skip() {
     skipped_count=$((skipped_count + 1))
     warn "Skipping $(basename "$repo"): $reason"
     log_message WARN "Skipped $repo: $reason"
+    append_report_note "Skipping $(basename "$repo"): $reason"
 }
 
 record_failure() {
@@ -541,6 +741,7 @@ record_failure() {
     failed_count=$((failed_count + 1))
     error "$(basename "$repo"): $reason"
     log_message ERROR "$repo: $reason"
+    append_report_note "$(basename "$repo"): $reason"
 }
 
 acquire_lock() {
@@ -792,6 +993,7 @@ github_repo_rows() {
     local auth_login="" kind="" endpoint page response count first_name="" page_marker=""
     if ! validate_owner "$owner"; then
         error "Invalid GitHub profile name: $owner"
+        append_report_note "Invalid GitHub profile name: $owner"
         return 2
     fi
     auth_login="$(authenticated_login)"
@@ -819,6 +1021,7 @@ except Exception:
 print(len(data) if isinstance(data, list) else -1)' <<< "$response" 2>/dev/null || printf '%s' '-1')"
         if [[ "$count" -lt 0 ]]; then
             error "Could not parse the GitHub repository list for '$owner'."
+            append_report_note "Could not parse the GitHub repository list for '$owner'."
             return 2
         fi
         if [[ "$count" -eq 0 ]]; then
@@ -855,6 +1058,7 @@ for repo in json.load(sys.stdin):
     print("\t".join(str(field) for field in fields))
 ' <<< "$response" || {
             error "Could not parse the GitHub repository list for '$owner'."
+            append_report_note "Could not parse the GitHub repository list for '$owner'."
             return 2
         }
         page=$((page + 1))
@@ -1012,9 +1216,126 @@ print_summary() {
 }
 
 finish_backup() {
+    REPORT_FINISHED=1
     print_summary
     send_notification
     [[ "$failed_count" -eq 0 ]]
+}
+
+append_report_note() {
+    local line="$1"
+    line="${line//$'\r'/}"
+    line="${line%%$'\n'*}"
+    [[ -n "$line" ]] || return 0
+    if [[ "$REPORT_NOTE_COUNT" -gt 100 ]]; then
+        return 0
+    fi
+    if [[ "${#line}" -gt 500 ]]; then
+        line="${line:0:500}..."
+    fi
+    if [[ "$REPORT_NOTE_COUNT" -eq 100 || "${#REPORT_NOTES}" -ge 32768 ]]; then
+        REPORT_NOTES+=$'...\n'
+        REPORT_NOTE_COUNT=101
+        return 0
+    fi
+    REPORT_NOTES+="$line"$'\n'
+    REPORT_NOTE_COUNT=$((REPORT_NOTE_COUNT + 1))
+}
+
+report_host() {
+    local host="${HOSTNAME:-}"
+    if [[ -z "$host" ]]; then
+        host="$(uname -n 2>/dev/null || true)"
+    fi
+    host="${host%%.*}"
+    host="${host//$'\n'/}"
+    host="${host//$'\r'/}"
+    [[ -n "$host" ]] || host="unknown"
+    printf '%s' "$host"
+}
+
+notify_url_acceptable() {
+    local url="$1"
+    [[ "$url" != *$'\n'* ]] || return 1
+    [[ "$url" != *$'\r'* ]] || return 1
+    [[ "$url" != *" "* ]] || return 1
+    [[ "$url" == http://* || "$url" == https://* ]]
+}
+
+# Post one application/x-www-form-urlencoded report. Other scripts can copy
+# this request: fields are _subject, host, program, status, summary, and log.
+# Accept: application/json asks a form host such as Formspree not to redirect.
+submit_run_report() {
+    [[ "$REPORT_SUBMITTED" -eq 0 ]] || return 0
+    REPORT_SUBMITTED=1
+    [[ "$REPORT_RUN" -eq 1 ]] || return 0
+    [[ "$DRY_RUN" -eq 0 ]] || return 0
+    [[ -n "$NOTIFY_URL" ]] || return 0
+    if ! notify_url_acceptable "$NOTIFY_URL"; then
+        warn "Ignoring the run-report URL because it is not a single http or https URL."
+        log_message WARN "Ignoring the run-report URL because it is not a single http or https URL."
+        return 0
+    fi
+    if ! have_cmd curl; then
+        warn "Run report requested but curl is not installed."
+        log_message WARN "Run report requested but curl is not installed."
+        return 0
+    fi
+
+    local host status summary subject
+    host="$(report_host)"
+    if [[ "$REPORT_ABORTED" -eq 1 || "$failed_count" -gt 0 ]]; then
+        status="failed"
+    else
+        status="ok"
+    fi
+    summary="Summary: $updated_count updated, $cloned_count cloned, $unchanged_count unchanged, $skipped_count skipped, $failed_count failed"
+    if [[ "$REPORT_ABORTED" -eq 1 && "$failed_count" -eq 0 ]]; then
+        subject="$PROGRAM $host: stopped before finishing"
+    else
+        subject="$PROGRAM $host: $failed_count failed, $skipped_count skipped, $updated_count updated"
+    fi
+    if [[ "${#subject}" -gt 180 ]]; then
+        subject="${subject:0:179}..."
+    fi
+
+    if ! curl --silent --fail \
+        --max-time 20 \
+        --connect-timeout 10 \
+        --proto '=http,https' \
+        --proto-redir '=http,https' \
+        --max-redirs 3 \
+        -H "Accept: application/json" \
+        -H "User-Agent: $PROGRAM/$VERSION" \
+        --data-urlencode "_subject=$subject" \
+        --data-urlencode "host=$host" \
+        --data-urlencode "program=$PROGRAM" \
+        --data-urlencode "status=$status" \
+        --data-urlencode "summary=$summary" \
+        --data-urlencode "log=$REPORT_NOTES" \
+        -o /dev/null \
+        -- "$NOTIFY_URL" \
+        2>/dev/null
+    then
+        warn "Could not submit the run report."
+        log_message WARN "Could not submit the run report."
+        return 0
+    fi
+    info "Submitted the run report."
+}
+
+on_exit_report() {
+    local status=$?
+    if [[ "$REPORT_RUN" -eq 1 && "$REPORT_FINISHED" -ne 1 && "$status" -ne 0 ]]; then
+        REPORT_ABORTED=1
+    fi
+    submit_run_report || true
+    exit "$status"
+}
+
+begin_run_report() {
+    REPORT_RUN=1
+    trap on_exit_report EXIT
 }
 
 generate_bash_completion() {
@@ -1029,9 +1350,13 @@ _github_backup() {
         prev="${COMP_WORDS[COMP_CWORD-1]}"
     fi
     local commands="sync profile list-repos setup install update uninstall enable disable start stop restart is-enabled is-active status journal"
-    local options="--base-dir --profile --list-repos --skip --skip-list --dry-run --verbose --debug --quiet --force-fast-forward --log-file --schedule --no-systemd --purge-config --force --no-completion --completion-only --uninstall-completion --version --help -q -f -V -h"
+    local options="--base-dir --profile --list-repos --skip --skip-list --dry-run --verbose --debug --quiet --force-fast-forward --log-file --schedule --config --no-systemd --purge-config --force --no-completion --completion-only --uninstall-completion --version --help -q -f -V -h"
     if [[ "$prev" == "--base-dir" || "$prev" == "--log-file" ]]; then
         COMPREPLY=( $(compgen -d -- "$cur") )
+        return 0
+    fi
+    if [[ "$prev" == "--config" ]]; then
+        COMPREPLY=( $(compgen -f -- "$cur") )
         return 0
     fi
     COMPREPLY=( $(compgen -W "$commands $options" -- "$cur") )
@@ -1147,6 +1472,11 @@ write_defaults_file() {
             write_env_assignment GITHUB_BACKUP_EMAIL "$EMAIL_TO"
         else
             printf '%s\n' '# GITHUB_BACKUP_EMAIL=you@example.com'
+        fi
+        if [[ -n "$NOTIFY_URL" ]]; then
+            write_env_assignment GITHUB_BACKUP_NOTIFY_URL "$NOTIFY_URL"
+        else
+            printf '%s\n' '# GITHUB_BACKUP_NOTIFY_URL=https://formspree.io/f/yourFormId'
         fi
         if [[ -n "$token_line" ]]; then
             printf '%s\n' "$token_line"
@@ -1487,8 +1817,13 @@ main() {
     apply_config
     parse_args "$@"
     case "$COMMAND" in
-        sync) sync_tree; finish_backup ;;
+        sync)
+            begin_run_report
+            sync_tree
+            finish_backup
+            ;;
         profile)
+            begin_run_report
             [[ -n "$PROFILE_USERNAME" ]] || die "profile requires a GitHub user or organization."
             sync_profile "$PROFILE_USERNAME"
             finish_backup

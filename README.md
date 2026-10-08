@@ -69,6 +69,7 @@ issues, releases, and Git LFS objects are not downloaded.
 - Bash 4 or newer, Git, curl, Python 3, `find`, and `flock` (util-linux)
 - systemd, when you want the timer
 - `mail` or `sendmail`, when you want failure email
+- an `http` or `https` form endpoint, when you want a run report
 
 ## Commands
 
@@ -90,7 +91,7 @@ issues, releases, and Git LFS objects are not downloaded.
 | `is-active` | Report whether the timer is active. |
 | `status` | Show the timer, then the service. |
 | `journal` | Follow the service journal. |
-| `--version`, `-V` | Print `github-backup 1.2.2`. |
+| `--version`, `-V` | Print `github-backup 1.4.0`. |
 | `--help`, `-h` | Print every command, every option, and the examples. |
 
 ### `sync`
@@ -213,9 +214,9 @@ the flags from this run, then the environment, then the current file. Always
 pass `--schedule` again with `--force`: the schedule is stored in the timer,
 and omitting it sets the timer back to `*-*-* 02:00:00`. An uncommented
 `GITHUB_BACKUP_TOKEN=` line is copied into the new file. `setup` does not copy
-a token out of the environment. `GITHUB_BACKUP_EMAIL`, the base directory, the
-profile, the log path, and the skip list do come from the environment when
-those variables are set.
+a token out of the environment. `GITHUB_BACKUP_EMAIL`,
+`GITHUB_BACKUP_NOTIFY_URL`, the base directory, the profile, the log path, and
+the skip list do come from the environment when those variables are set.
 
 `--no-systemd` writes the configuration and base directory and skips the units,
 including when `--force` is also set. An existing timer is left unchanged.
@@ -403,7 +404,7 @@ github-backup --help
 github-backup -h
 ```
 
-`--version` prints `github-backup 1.2.2`. Running `github-backup` with no
+`--version` prints `github-backup 1.4.0`. Running `github-backup` with no
 arguments prints the same text as `--help` and exits `0`. An unknown argument,
 or an option with no value, prints the error and then the same help, and
 exits `1`.
@@ -423,6 +424,7 @@ exits `1`.
 | `--quiet`, `-q` | any command | Hide `[INFO]`, `[OK]`, and `[WARN]`, including skip lines and the summary. Errors still print. The log file is still written. One warning still prints if the log cannot be written. See [Messages](#messages). |
 | `--force-fast-forward` | `sync`, `profile` | Reset eligible checkouts to the upstream commit and delete untracked files. |
 | `--log-file FILE` | `sync`, `profile`, `setup` | Log path for this run. On `setup`, also the path saved in the configuration file. Default: `/var/log/github-backup.log`. |
+| `--config FILE` | any command | Read command-line options from `FILE`. One option per line. |
 | `--schedule CALENDAR` | `setup` | systemd `OnCalendar` value. Default: `*-*-* 02:00:00`. |
 | `--no-systemd` | `setup` | Write the configuration and skip unit installation. |
 | `--force`, `-f` | `install`, `setup` | Overwrite an existing binary, completion file, or unit. On `setup`, also rewrite the configuration. |
@@ -438,11 +440,47 @@ A flag may appear before or after the command name:
 ```bash
 github-backup --dry-run --verbose sync --base-dir ~/src
 github-backup sync --base-dir ~/src --dry-run --verbose
+github-backup sync --config /etc/github-backup/backup.conf
+github-backup sync --config /etc/github-backup/backup.conf --dry-run
 ```
 
 `--profile` and `--list-repos` are also accepted as the old option form, without
 a separate command word. `--install`, `--update`, and `--uninstall` are the old
 forms of those three commands.
+
+### Option file
+
+Pass the options on the command line, or pass `--config FILE` and store those
+options in the file. The command (`sync`, `profile`, `setup`, and the rest)
+stays on the command line. `--config` inside the file is rejected.
+
+```text
+# /etc/github-backup/backup.conf
+--base-dir /mnt/nas/github
+--log-file /var/log/github-backup.log
+# --profile YOUR_GITHUB_USERNAME
+# --skip repo-one
+# --quiet
+```
+
+One option per line. A blank line is ignored. A line that starts with `#` is a
+comment. Wrap a value in quotes when it contains spaces:
+`--base-dir "/mnt/nas/my mirrors"`. `--base-dir=/mnt/nas/github` is the same as
+`--base-dir /mnt/nas/github`. A flag in the file, such as `--quiet` or
+`--dry-run`, is on for every run that uses the file. Omit the line to leave it
+off. There is no `--no-dry-run`.
+
+A flag typed on the command line wins over the same option in the file.
+`--config` wins over the environment and over `/etc/default/github-backup` for
+each option the file sets. Options the file does not set still come from the
+environment, then the defaults file, then the built-in value.
+
+The GitHub token, `GITHUB_BACKUP_EMAIL`, and `GITHUB_BACKUP_NOTIFY_URL` are
+not command-line options. They stay in the environment or in
+`/etc/default/github-backup`.
+
+`github-backup.conf.example` is a commented starting point. Nothing loads it
+until you pass its path to `--config`.
 
 ## Configuration
 
@@ -459,6 +497,7 @@ GITHUB_BACKUP_BASE_DIR=/mnt/nas/github/YOUR_GITHUB_USERNAME
 GITHUB_BACKUP_PROFILE=YOUR_GITHUB_USERNAME
 GITHUB_BACKUP_LOG_FILE=/var/log/github-backup.log
 GITHUB_BACKUP_EMAIL=you@example.com
+GITHUB_BACKUP_NOTIFY_URL=https://formspree.io/f/yourFormId
 GITHUB_BACKUP_TOKEN=github_pat_REPLACE_ME
 GITHUB_BACKUP_SKIP_LIST=repo-one,repo-two
 ```
@@ -469,6 +508,7 @@ GITHUB_BACKUP_SKIP_LIST=repo-one,repo-two
 | `GITHUB_BACKUP_PROFILE` | User or organization to discover. When this is non-empty, `sync` runs profile mode. |
 | `GITHUB_BACKUP_LOG_FILE` | Log file. Each line is `YYYY-MM-DD HH:MM:SS [LEVEL] message`. |
 | `GITHUB_BACKUP_EMAIL` | Address for failure mail. Mail is sent only when at least one repository fails. |
+| `GITHUB_BACKUP_NOTIFY_URL` | Form endpoint for a report after every real `sync` or `profile`. |
 | `GITHUB_BACKUP_TOKEN` | GitHub token. Leave this commented until you edit the file. |
 | `GITHUB_BACKUP_SKIP_LIST` | Comma-separated repository names to skip. |
 
@@ -516,6 +556,53 @@ Failed: N
 Log: /var/log/github-backup.log
 ```
 
+### Run report
+
+Set `GITHUB_BACKUP_NOTIFY_URL` to a form you control. After every real `sync`
+or `profile`, including a run that stops early, the command POSTs one report.
+`list-repos`, `setup`, `install`, and a dry run do not post. The full history
+stays in the log file. The form receives the summary and the skip and failure
+lines from this run.
+
+The URL is the secret. It is stored in `/etc/default/github-backup`, which is
+mode `600`. The GitHub token is not a form field. A POST that fails, or a URL
+that is not a single `http` or `https` address, prints a warning and leaves
+the backup's exit status unchanged. `--quiet` hides that warning on the
+console. The log file still records it, and the POST is still attempted.
+
+The body is `application/x-www-form-urlencoded`. The request sends
+`Accept: application/json`, which tells Formspree to return JSON instead of
+redirecting. Leave reCAPTCHA off. A server cannot solve it.
+
+| Field | Value |
+|---|---|
+| `_subject` | One-line subject. Formspree uses this as the email subject. |
+| `host` | Short hostname. |
+| `program` | `github-backup`. |
+| `status` | `ok` or `failed`. Skips alone stay `ok`. |
+| `summary` | `Summary: N updated, N cloned, N unchanged, N skipped, N failed`. |
+| `log` | Skip and failure lines from this run. At most 100 lines and 32 KB. |
+
+```bash
+sudo env GITHUB_BACKUP_NOTIFY_URL='https://formspree.io/f/yourFormId' \
+  github-backup setup --force \
+  --base-dir /mnt/nas/github \
+  --schedule '*-*-* 02:00:00'
+```
+
+`setup` writes the URL when `GITHUB_BACKUP_NOTIFY_URL` is already set in the
+environment. Otherwise it leaves the commented example in the configuration
+file, and you can uncomment that line. Pass `--schedule` again with `--force`.
+
+This is the report shape for the other commands on these machines. Copy the
+same field names. Change `program`, and name the variable for that command,
+such as `WG_MANAGER_NOTIFY_URL`. Point them at one form or at one form each.
+
+Formspree's free plan accepts 50 submissions a month for the whole account.
+One server each night is about 30. Past the cap, Formspree stores the report
+and stops emailing it. A night with no mail can also mean the timer did not
+run. The form only hears from a run that started.
+
 ### Schedule
 
 The timer's `OnCalendar` is the interval. The default is every day at 02:00.
@@ -549,6 +636,7 @@ Run that as root so it can read the mode `600` configuration file.
 | `GITHUB_BACKUP_PROFILE` | empty | Profile discovered by `sync`. |
 | `GITHUB_BACKUP_LOG_FILE` | `/var/log/github-backup.log` | Log path. |
 | `GITHUB_BACKUP_EMAIL` | empty | Failure-mail recipient. |
+| `GITHUB_BACKUP_NOTIFY_URL` | empty | Form endpoint for the run report. |
 | `GITHUB_BACKUP_TOKEN` | empty | GitHub token. |
 | `GH_TOKEN` | empty | Token used when `GITHUB_BACKUP_TOKEN` is unset. |
 | `GITHUB_BACKUP_SKIP_LIST` | empty | Comma-separated names to skip. |

@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import urllib.parse
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -16,6 +17,7 @@ SCRIPT = ROOT / "github-backup.sh"
 
 def run(*args, cwd=None, env=None, check=True):
     merged_env = os.environ.copy()
+    merged_env.pop("GITHUB_BACKUP_NOTIFY_URL", None)
     merged_env.update(
         {
             "GIT_AUTHOR_NAME": "github-backup tests",
@@ -341,6 +343,93 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("Base directory does not exist", result.stdout)
 
+    def test_run_report_posts_summary_without_the_token(self):
+        with form_server() as url:
+            result = self.backup(
+                env={
+                    "GITHUB_BACKUP_NOTIFY_URL": url,
+                    "GITHUB_BACKUP_TOKEN": "super-secret-token-value",
+                }
+            )
+
+        self.assertIn("Submitted the run report.", result.stdout)
+        self.assertEqual(1, len(FormHandler.posts))
+        post = FormHandler.posts[0]
+        self.assertEqual("application/json", post["accept"])
+        self.assertTrue(post["content_type"].startswith("application/x-www-form-urlencoded"))
+        self.assertEqual("github-backup/1.4.0", post["user_agent"])
+        self.assertEqual("github-backup", form_field("program"))
+        self.assertEqual("ok", form_field("status"))
+        self.assertIn("0 failed", form_field("summary"))
+        self.assertIn("github-backup ", form_field("_subject"))
+        self.assertNotIn("super-secret-token-value", post["raw"])
+        self.assertNotIn("Bearer", post["raw"])
+        self.assertNotIn(url, post["raw"])
+
+    def test_dry_run_does_not_submit_a_run_report(self):
+        with form_server() as url:
+            result = self.backup("--dry-run", env={"GITHUB_BACKUP_NOTIFY_URL": url})
+
+        self.assertEqual(0, result.returncode)
+        self.assertEqual([], FormHandler.posts)
+        self.assertNotIn("Submitted the run report.", result.stdout)
+
+    def test_run_report_includes_skip_lines_and_stays_ok(self):
+        (self.fixture.client / "local.txt").write_text("local commit\n")
+        run("git", "add", "local.txt", cwd=self.fixture.client)
+        run("git", "commit", "-m", "local only", cwd=self.fixture.client)
+
+        with form_server() as url:
+            result = self.backup(env={"GITHUB_BACKUP_NOTIFY_URL": url})
+
+        self.assertEqual(0, result.returncode)
+        self.assertEqual("ok", form_field("status"))
+        self.assertIn("1 skipped", form_field("summary"))
+        self.assertIn("Skipping sample: 1 commit ahead of origin/", form_field("log"))
+
+    def test_stopped_run_posts_a_failure_and_keeps_the_exit_status(self):
+        missing = self.root / "does-not-exist"
+        with form_server() as url:
+            result = run(
+                SCRIPT,
+                "sync",
+                "--base-dir",
+                missing,
+                "--log-file",
+                self.log,
+                env={"GITHUB_BACKUP_NOTIFY_URL": url},
+                check=False,
+            )
+
+        self.assertEqual(1, result.returncode)
+        self.assertEqual("failed", form_field("status"))
+        self.assertIn("stopped before finishing", form_field("_subject"))
+        self.assertIn("Base directory does not exist", form_field("log"))
+
+    def test_run_report_failure_does_not_fail_the_backup(self):
+        with form_server(status=500) as url:
+            result = self.backup(env={"GITHUB_BACKUP_NOTIFY_URL": url})
+
+        self.assertEqual(0, result.returncode)
+        self.assertIn("Could not submit the run report.", result.stdout)
+        self.assertNotIn("Submitted the run report.", result.stdout)
+        self.assertEqual(1, len(FormHandler.posts))
+
+    def test_quiet_run_still_submits_the_report(self):
+        with form_server() as url:
+            result = self.backup("--quiet", env={"GITHUB_BACKUP_NOTIFY_URL": url})
+
+        self.assertEqual(0, result.returncode)
+        self.assertNotIn("Submitted the run report.", result.stdout)
+        self.assertEqual("ok", form_field("status"))
+
+    def test_malformed_notify_url_is_ignored(self):
+        result = self.backup(env={"GITHUB_BACKUP_NOTIFY_URL": "http://127.0.0.1/form\nbad"})
+
+        self.assertEqual(0, result.returncode)
+        self.assertIn("Ignoring the run-report URL", result.stdout)
+        self.assertNotIn("Submitted the run report.", result.stdout)
+
 
 class FakeGitHubHandler(http.server.BaseHTTPRequestHandler):
     requests = []
@@ -444,6 +533,52 @@ def fake_github_server():
         server.server_close()
 
 
+class FormHandler(http.server.BaseHTTPRequestHandler):
+    posts = []
+    status_code = 200
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length).decode()
+        FormHandler.posts.append(
+            {
+                "accept": self.headers.get("Accept", ""),
+                "user_agent": self.headers.get("User-Agent", ""),
+                "content_type": self.headers.get("Content-Type", ""),
+                "fields": urllib.parse.parse_qs(raw, keep_blank_values=True),
+                "raw": raw,
+            }
+        )
+        body = b'{"ok":true}'
+        self.send_response(FormHandler.status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        del format, args
+
+
+@contextlib.contextmanager
+def form_server(status=200):
+    FormHandler.posts = []
+    FormHandler.status_code = status
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FormHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/f/testform"
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def form_field(name):
+    return FormHandler.posts[0]["fields"][name][0]
+
+
 class GitHubBackupProfileAndInstallTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -466,6 +601,7 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
                 env = os.environ.copy()
                 env.pop("GITHUB_BACKUP_TOKEN", None)
                 env.pop("GH_TOKEN", None)
+                env.pop("GITHUB_BACKUP_NOTIFY_URL", None)
                 env["GITHUB_BACKUP_API_URL"] = api_url
                 result = subprocess.run(
                     [str(SCRIPT), "list-repos", "alice", "--log-file", str(self.log)],
@@ -627,6 +763,7 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
         self.assertTrue(os.access(install_path, os.X_OK))
         completion = pathlib.Path(env["GITHUB_BACKUP_COMPLETION_DIR"], "github-backup").read_text()
         self.assertIn("--force-fast-forward", completion)
+        self.assertIn("--config", completion)
         self.assertIn("setup", completion)
         self.assertFalse(pathlib.Path(env["GITHUB_BACKUP_DEFAULTS_FILE"]).exists())
         self.assertFalse(pathlib.Path(env["GITHUB_BACKUP_SYSTEMD_DIR"], "github-backup.service").exists())
@@ -660,6 +797,29 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
         self.assertIn("GITHUB_BACKUP_PROFILE=alice", defaults)
         self.assertIn(f'GITHUB_BACKUP_BASE_DIR="{destination}"', defaults)
         self.assertIn("# GITHUB_BACKUP_EMAIL=you@example.com", defaults)
+        self.assertIn("# GITHUB_BACKUP_NOTIFY_URL=https://formspree.io/f/yourFormId", defaults)
+
+    def test_setup_saves_notify_url_from_the_environment(self):
+        env = self.paths("notify-setup")
+        env["GITHUB_BACKUP_NOTIFY_URL"] = "https://formspree.io/f/abcxyz"
+        destination = self.root / "notify-setup" / "repos"
+        run(
+            SCRIPT,
+            "setup",
+            "--no-systemd",
+            "--base-dir",
+            destination,
+            "--log-file",
+            self.root / "notify-setup" / "backup.log",
+            env=env,
+        )
+
+        defaults_file = pathlib.Path(env["GITHUB_BACKUP_DEFAULTS_FILE"])
+        self.assertEqual(0o600, defaults_file.stat().st_mode & 0o777)
+        self.assertIn(
+            "GITHUB_BACKUP_NOTIFY_URL=https://formspree.io/f/abcxyz",
+            defaults_file.read_text(),
+        )
 
     def test_setup_without_systemd_still_writes_configuration(self):
         env = self.paths("cron")
@@ -781,6 +941,8 @@ class GitHubBackupHelpTests(unittest.TestCase):
         self.assertEqual(0, result.returncode)
         self.assertIn("Usage:", result.stdout)
         self.assertIn("profile USER", result.stdout)
+        self.assertIn("GITHUB_BACKUP_NOTIFY_URL", result.stdout)
+        self.assertIn("--config FILE", result.stdout)
         self.assertIn("The backup command is: github-backup sync", result.stdout)
         self.assertNotIn("[ERROR]", result.stdout)
 
@@ -795,6 +957,179 @@ class GitHubBackupHelpTests(unittest.TestCase):
         self.assertEqual(1, result.returncode)
         self.assertIn("profile requires a value.", result.stdout)
         self.assertIn("Usage:", result.stdout)
+
+    def test_config_requires_a_value(self):
+        result = run(SCRIPT, "sync", "--config", check=False)
+        self.assertEqual(1, result.returncode)
+        self.assertIn("--config requires a value.", result.stdout)
+        self.assertIn("Usage:", result.stdout)
+
+
+class GitHubBackupConfigFileTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.temp.name)
+        self.fixture = GitFixture(self.root)
+        self.log = self.root / "backup.log"
+        self.config = self.root / "backup.conf"
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def write_config(self, text):
+        self.config.write_text(text)
+        return self.config
+
+    def test_config_file_supplies_base_dir_and_dry_run(self):
+        self.fixture.publish("remote update\n")
+        original = self.fixture.client_head()
+        recorded = run("git", "rev-parse", "origin/master", cwd=self.fixture.client).stdout.strip()
+        self.write_config(
+            "\n".join(
+                [
+                    "# preview only",
+                    "",
+                    f"--base-dir {self.fixture.client.parent}",
+                    f"--log-file {self.log}",
+                    "--dry-run",
+                    "--verbose",
+                ]
+            )
+            + "\n"
+        )
+
+        result = run(SCRIPT, "sync", "--config", self.config)
+
+        self.assertEqual(0, result.returncode)
+        self.assertIn("up to date", result.stdout)
+        self.assertNotIn("would fast-forward", result.stdout)
+        self.assertEqual(original, self.fixture.client_head())
+        self.assertEqual(recorded, run("git", "rev-parse", "origin/master", cwd=self.fixture.client).stdout.strip())
+
+    def test_command_line_overrides_config_file_and_environment(self):
+        missing = self.root / "missing"
+        self.write_config(
+            "\n".join(
+                [
+                    f"--base-dir {missing}",
+                    "--verbose",
+                ]
+            )
+            + "\n"
+        )
+
+        result = run(
+            SCRIPT,
+            "sync",
+            "--config",
+            self.config,
+            "--base-dir",
+            self.fixture.client.parent,
+            "--log-file",
+            self.log,
+            "--dry-run",
+            env={"GITHUB_BACKUP_BASE_DIR": str(self.root / "from-env")},
+        )
+
+        self.assertEqual(0, result.returncode)
+        self.assertIn("up to date", result.stdout)
+        self.assertNotIn("Base directory does not exist", result.stdout)
+
+    def test_config_file_wins_over_the_environment(self):
+        self.write_config(
+            "\n".join(
+                [
+                    f"--base-dir {self.fixture.client.parent}",
+                    f"--log-file {self.log}",
+                    "--dry-run",
+                    "--verbose",
+                ]
+            )
+            + "\n"
+        )
+
+        result = run(
+            SCRIPT,
+            "sync",
+            "--config",
+            self.config,
+            env={"GITHUB_BACKUP_BASE_DIR": str(self.root / "from-env")},
+        )
+
+        self.assertEqual(0, result.returncode)
+        self.assertIn("up to date", result.stdout)
+        self.assertNotIn("from-env", result.stdout)
+
+    def test_config_file_skip_is_applied(self):
+        self.fixture.publish("remote update\n")
+        self.write_config(
+            "\n".join(
+                [
+                    f"--base-dir {self.fixture.client.parent}",
+                    f"--log-file {self.log}",
+                    "--dry-run",
+                    "--skip sample",
+                ]
+            )
+            + "\n"
+        )
+
+        result = run(SCRIPT, "sync", "--config", self.config)
+
+        self.assertEqual(0, result.returncode)
+        self.assertIn("Skipping sample: listed in skip configuration", result.stdout)
+        self.assertNotIn("would fast-forward", result.stdout)
+
+    def test_quoted_base_dir_in_config_file(self):
+        destination = self.root / "my dir"
+        destination.mkdir()
+        self.write_config(f'--base-dir "{destination}"\n--dry-run\n--log-file "{self.log}"\n')
+
+        result = run(SCRIPT, "sync", "--config", self.config)
+
+        self.assertEqual(0, result.returncode)
+        self.assertIn("Summary:", result.stdout)
+        self.assertNotIn("does not exist", result.stdout)
+
+    def test_missing_config_file_fails(self):
+        missing = self.root / "absent.conf"
+        result = run(SCRIPT, "sync", "--config", missing, check=False)
+        self.assertEqual(1, result.returncode)
+        self.assertIn("Configuration file is not a readable file", result.stdout)
+
+    def test_unknown_option_in_config_file_fails(self):
+        self.write_config("--not-an-option\n")
+        result = run(SCRIPT, "sync", "--config", self.config, check=False)
+        self.assertEqual(1, result.returncode)
+        self.assertIn(f"{self.config}:1: Unknown argument: --not-an-option", result.stdout)
+
+    def test_flag_value_in_config_file_fails(self):
+        self.write_config("--dry-run true\n")
+        result = run(SCRIPT, "sync", "--config", self.config, check=False)
+        self.assertEqual(1, result.returncode)
+        self.assertIn("does not take a value", result.stdout)
+
+    def test_nested_config_is_rejected(self):
+        other = self.root / "other.conf"
+        other.write_text("--dry-run\n")
+        self.write_config(f"--config {other}\n")
+        result = run(SCRIPT, "sync", "--config", self.config, check=False)
+        self.assertEqual(1, result.returncode)
+        self.assertIn("--config cannot be nested", result.stdout)
+
+    def test_config_option_once(self):
+        self.write_config("--dry-run\n")
+        result = run(
+            SCRIPT,
+            "sync",
+            "--config",
+            self.config,
+            "--config",
+            self.config,
+            check=False,
+        )
+        self.assertEqual(1, result.returncode)
+        self.assertIn("--config was given more than once.", result.stdout)
 
 
 if __name__ == "__main__":
