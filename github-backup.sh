@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.3"
+VERSION="1.4.5"
 PROGRAM="github-backup"
 INSTALL_PATH="${GITHUB_BACKUP_INSTALL_PATH:-/usr/local/bin/github-backup}"
 UPDATE_URL="${GITHUB_BACKUP_UPDATE_URL:-https://raw.githubusercontent.com/peternickol/github-backup/master/github-backup.sh}"
@@ -36,8 +36,8 @@ PURGE_CONFIG=0
 BASE_DIR=""
 PROFILE=""
 LOG_FILE=""
-EMAIL_TO=""
 NOTIFY_URL=""
+NOTIFY_ON_ERROR=0
 TOKEN=""
 SKIP_LIST_RAW=""
 CONFIG_FILE=""
@@ -218,6 +218,8 @@ Repository options:
   --debug                  Print each fetch target on stderr, even with --quiet
   --quiet, -q              Hide [INFO], [OK], [WARN], skip lines, and the summary.
                            Errors still print. The log file is still written.
+  --notify-on-error        Submit the form report only when the run fails.
+                           The default submits after every real sync or profile.
   --force-fast-forward     Reset a branch that has a GitHub upstream, then
                            git clean -fd. Refuses detached HEAD, a missing
                            upstream, a non-GitHub remote, and a Git operation
@@ -273,9 +275,13 @@ are fast-forwarded. Dirty, ahead, and diverged branches are skipped.
 
 Run report:
   When GITHUB_BACKUP_NOTIFY_URL is an http or https form endpoint, sync and
-  profile POST one report after a real run. A dry run does not. The fields are
-  _subject, host, program, status, summary, and log. A failed POST is a warning
-  and does not change the exit status. The GitHub token is not included.
+  profile POST one report after every real run. --notify-on-error submits
+  only when a repository fails or the run stops early. A dry run does not
+  submit. The log names every repository and what happened to it. A
+  fast-forward also shows git's diffstat: the files and how many lines
+  changed. The form is the only notification. The fields are _subject, host,
+  program, status, summary, and log. A failed POST is a warning and does not
+  change the exit status. The GitHub token is not included.
 
 With no arguments, this help is printed and nothing is backed up.
 The backup command is: $PROGRAM sync
@@ -337,7 +343,7 @@ load_file_cfg() {
         key="$(trim "${line%%=*}")"
         value="$(unquote_value "${line#*=}")"
         case "$key" in
-            GITHUB_BACKUP_BASE_DIR|GITHUB_BACKUP_PROFILE|GITHUB_BACKUP_LOG_FILE|GITHUB_BACKUP_EMAIL|GITHUB_BACKUP_NOTIFY_URL|GITHUB_BACKUP_TOKEN|GITHUB_BACKUP_SKIP_LIST)
+            GITHUB_BACKUP_BASE_DIR|GITHUB_BACKUP_PROFILE|GITHUB_BACKUP_LOG_FILE|GITHUB_BACKUP_NOTIFY_URL|GITHUB_BACKUP_TOKEN|GITHUB_BACKUP_SKIP_LIST)
                 FILE_CFG["$key"]="$value"
                 ;;
         esac
@@ -361,7 +367,6 @@ apply_config() {
     BASE_DIR="$(config_value GITHUB_BACKUP_BASE_DIR "$HOME/github-backup")"
     PROFILE="$(config_value GITHUB_BACKUP_PROFILE "")"
     LOG_FILE="$(config_value GITHUB_BACKUP_LOG_FILE "/var/log/github-backup.log")"
-    EMAIL_TO="$(config_value GITHUB_BACKUP_EMAIL "")"
     NOTIFY_URL="$(config_value GITHUB_BACKUP_NOTIFY_URL "")"
     if [[ -n "${GITHUB_BACKUP_TOKEN+x}" ]]; then
         TOKEN="$GITHUB_BACKUP_TOKEN"
@@ -463,7 +468,7 @@ apply_saved_option() {
             need_value "$option" "$value"
             TOKEN="$value"
             ;;
-        --dry-run|--verbose|--debug|-q|--quiet|--force-fast-forward|--force|-f|--no-completion|--completion-only|--uninstall-completion|--no-systemd|--purge-config|--install|--update|--uninstall|-V|--version|-h|--help)
+        --dry-run|--verbose|--debug|-q|--quiet|--notify-on-error|--force-fast-forward|--force|-f|--no-completion|--completion-only|--uninstall-completion|--no-systemd|--purge-config|--install|--update|--uninstall|-V|--version|-h|--help)
             if [[ "$has_value" -eq 1 ]]; then
                 error_option "$option does not take a value."
                 usage 1
@@ -473,6 +478,7 @@ apply_saved_option() {
                 --verbose) VERBOSE=1 ;;
                 --debug) DEBUG=1 ;;
                 -q|--quiet) QUIET=1 ;;
+                --notify-on-error) NOTIFY_ON_ERROR=1 ;;
                 --force-fast-forward) FORCE_FAST_FORWARD=1 ;;
                 --force|-f) FORCE=1 ;;
                 --no-completion) NO_COMPLETION=1 ;;
@@ -782,6 +788,28 @@ record_failure() {
     append_report_note "$(basename "$repo"): $reason"
 }
 
+record_result() {
+    local name="$1"
+    local outcome="$2"
+    append_report_note "$name: $outcome"
+}
+
+record_diffstat() {
+    local repo="$1"
+    local old="$2"
+    local new="$3"
+    local line=""
+    [[ -n "$old" && -n "$new" && "$old" != "$new" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -n "$line" ]] || continue
+        if [[ "$QUIET" -eq 0 ]]; then
+            printf '  %s\n' "$line"
+        fi
+        log_message INFO "$line"
+        append_report_note "  $line"
+    done < <(git --no-pager -C "$repo" -c color.ui=never diff --stat "$old" "$new" 2>/dev/null || true)
+}
+
 acquire_lock() {
     [[ "$LOCK_ACQUIRED" -eq 1 ]] && return 0
     local lock="$BASE_DIR/.github-backup.lock"
@@ -897,12 +925,15 @@ sync_repo() {
             unchanged_count=$((unchanged_count + 1))
             [[ "$VERBOSE" -eq 1 ]] && ok "$name: up to date"
             log_message OK "$repo up to date"
+            record_result "$name" "up to date"
             return 0
         fi
         if [[ "$DRY_RUN" -eq 1 ]]; then
             info "$name: would reset to $upstream and delete untracked files"
             updated_count=$((updated_count + 1))
             log_message INFO "$repo would reset to $upstream"
+            record_result "$name" "would reset to $upstream and delete untracked files"
+            record_diffstat "$repo" "$local_oid" "$upstream_oid"
             return 0
         fi
         warn "Force-aligning $name to $upstream; local changes and local-only commits will be discarded"
@@ -917,6 +948,8 @@ sync_repo() {
         updated_count=$((updated_count + 1))
         ok "$name aligned to $upstream"
         log_message OK "$repo aligned to $upstream"
+        record_result "$name" "aligned to $upstream"
+        record_diffstat "$repo" "$local_oid" "$upstream_oid"
         return 0
     fi
 
@@ -929,6 +962,7 @@ sync_repo() {
         unchanged_count=$((unchanged_count + 1))
         [[ "$VERBOSE" -eq 1 ]] && ok "$name: up to date"
         log_message OK "$repo up to date"
+        record_result "$name" "up to date"
         return 0
     fi
 
@@ -939,12 +973,16 @@ sync_repo() {
             info "$name: would fast-forward $(commit_phrase "$behind") to $upstream"
             updated_count=$((updated_count + 1))
             log_message INFO "$repo would fast-forward $(commit_phrase "$behind") to $upstream"
+            record_result "$name" "would fast-forward $(commit_phrase "$behind") to $upstream"
+            record_diffstat "$repo" "$local_oid" "$upstream_oid"
             return 0
         fi
         if output="$(git -C "$repo" merge --ff-only --no-edit "$upstream_oid" 2>&1)"; then
             updated_count=$((updated_count + 1))
             ok "$name fast-forwarded $(commit_phrase "$behind") to $upstream"
             log_message OK "$repo fast-forwarded to $upstream"
+            record_result "$name" "fast-forwarded $(commit_phrase "$behind") to $upstream"
+            record_diffstat "$repo" "$local_oid" "$upstream_oid"
         else
             record_failure "$repo" "fast-forward failed: $output"
         fi
@@ -1173,6 +1211,7 @@ clone_repo() {
     if [[ "$DRY_RUN" -eq 1 ]]; then
         info "$owner/$name: would clone into $destination"
         cloned_count=$((cloned_count + 1))
+        record_result "$owner/$name" "would clone into $destination"
         return 0
     fi
 
@@ -1186,6 +1225,7 @@ clone_repo() {
         cloned_count=$((cloned_count + 1))
         ok "Cloned $owner/$name"
         log_message OK "Cloned $destination"
+        record_result "$owner/$name" "cloned"
     else
         record_failure "$destination" "clone failed: $output"
     fi
@@ -1214,32 +1254,6 @@ sync_profile() {
     done <<< "$rows"
 }
 
-send_notification() {
-    [[ "$DRY_RUN" -eq 0 ]] || return 0
-    [[ -n "$EMAIL_TO" ]] || return 0
-    [[ "$failed_count" -gt 0 ]] || return 0
-    if [[ "$EMAIL_TO" == *$'\n'* || "$EMAIL_TO" == *$'\r'* ]]; then
-        warn "Ignoring the email address because it is not a single line."
-        return 0
-    fi
-    local subject="github-backup: $failed_count failed, $skipped_count skipped"
-    local body="Updated: $updated_count
-Cloned: $cloned_count
-Unchanged: $unchanged_count
-Skipped: $skipped_count
-Failed: $failed_count
-Log: $LOG_FILE"
-    if have_cmd mail; then
-        printf '%s\n' "$body" | mail -s "$subject" "$EMAIL_TO" \
-            || warn "Could not send notification to $EMAIL_TO"
-    elif have_cmd sendmail; then
-        printf 'Subject: %s\nTo: %s\n\n%s\n' "$subject" "$EMAIL_TO" "$body" | sendmail "$EMAIL_TO" \
-            || warn "Could not send notification to $EMAIL_TO"
-    else
-        warn "Email requested but neither mail nor sendmail is installed"
-    fi
-}
-
 print_summary() {
     local summary
     if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -1256,7 +1270,6 @@ print_summary() {
 finish_backup() {
     REPORT_FINISHED=1
     print_summary
-    send_notification
     [[ "$failed_count" -eq 0 ]]
 }
 
@@ -1265,15 +1278,15 @@ append_report_note() {
     line="${line//$'\r'/}"
     line="${line%%$'\n'*}"
     [[ -n "$line" ]] || return 0
-    if [[ "$REPORT_NOTE_COUNT" -gt 100 ]]; then
+    if [[ "$REPORT_NOTE_COUNT" -gt 2000 ]]; then
         return 0
     fi
     if [[ "${#line}" -gt 500 ]]; then
         line="${line:0:500}..."
     fi
-    if [[ "$REPORT_NOTE_COUNT" -eq 100 || "${#REPORT_NOTES}" -ge 32768 ]]; then
+    if [[ "$REPORT_NOTE_COUNT" -eq 2000 || "${#REPORT_NOTES}" -ge 262144 ]]; then
         REPORT_NOTES+=$'...\n'
-        REPORT_NOTE_COUNT=101
+        REPORT_NOTE_COUNT=2001
         return 0
     fi
     REPORT_NOTES+="$line"$'\n'
@@ -1310,6 +1323,18 @@ submit_run_report() {
     [[ "$REPORT_RUN" -eq 1 ]] || return 0
     [[ "$DRY_RUN" -eq 0 ]] || return 0
     [[ -n "$NOTIFY_URL" ]] || return 0
+
+    local host status summary subject
+    host="$(report_host)"
+    if [[ "$REPORT_ABORTED" -eq 1 || "$failed_count" -gt 0 ]]; then
+        status="failed"
+    else
+        status="ok"
+    fi
+    if [[ "$NOTIFY_ON_ERROR" -eq 1 && "$status" == "ok" ]]; then
+        return 0
+    fi
+
     if ! notify_url_acceptable "$NOTIFY_URL"; then
         warn "Ignoring the run-report URL because it is not a single http or https URL."
         log_message WARN "Ignoring the run-report URL because it is not a single http or https URL."
@@ -1321,13 +1346,6 @@ submit_run_report() {
         return 0
     fi
 
-    local host status summary subject
-    host="$(report_host)"
-    if [[ "$REPORT_ABORTED" -eq 1 || "$failed_count" -gt 0 ]]; then
-        status="failed"
-    else
-        status="ok"
-    fi
     summary="Summary: $updated_count updated, $cloned_count cloned, $unchanged_count unchanged, $skipped_count skipped, $failed_count failed"
     if [[ "$REPORT_ABORTED" -eq 1 && "$failed_count" -eq 0 ]]; then
         subject="$PROGRAM $host: stopped before finishing"
@@ -1389,7 +1407,7 @@ _github_backup() {
         prev="${COMP_WORDS[COMP_CWORD-1]}"
     fi
     local commands="sync profile list-repos setup install update uninstall enable disable start stop restart is-enabled is-active status journal"
-    local options="--base-dir --profile --list-repos --skip --skip-list --dry-run --verbose --debug --quiet --force-fast-forward --log-file --schedule --config --token --no-systemd --purge-config --force --no-completion --completion-only --uninstall-completion --version --help -q -f -V -h"
+    local options="--base-dir --profile --list-repos --skip --skip-list --dry-run --verbose --debug --quiet --notify-on-error --force-fast-forward --log-file --schedule --config --token --no-systemd --purge-config --force --no-completion --completion-only --uninstall-completion --version --help -q -f -V -h"
     if [[ "$prev" == "--base-dir" || "$prev" == "--log-file" ]]; then
         COMPREPLY=( $(compgen -d -- "$cur") )
         return 0
@@ -1507,11 +1525,6 @@ write_defaults_file() {
         write_env_assignment GITHUB_BACKUP_BASE_DIR "$BASE_DIR"
         write_env_assignment GITHUB_BACKUP_PROFILE "$PROFILE"
         write_env_assignment GITHUB_BACKUP_LOG_FILE "$LOG_FILE"
-        if [[ -n "$EMAIL_TO" ]]; then
-            write_env_assignment GITHUB_BACKUP_EMAIL "$EMAIL_TO"
-        else
-            printf '%s\n' '# GITHUB_BACKUP_EMAIL=you@example.com'
-        fi
         if [[ -n "$NOTIFY_URL" ]]; then
             write_env_assignment GITHUB_BACKUP_NOTIFY_URL "$NOTIFY_URL"
         else
@@ -1569,12 +1582,15 @@ option_file_template() {
 #   line replaces this one and is kept in shell history.
 # https://github.com/peternickol/github-backup/blob/master/README.md#configuration
 #
-# Mail and the run report
-#   These are not options in this file. Set them in /etc/default/github-backup:
-#     GITHUB_BACKUP_EMAIL=you@example.com
+# Run report
+#   The only notification is a form POST. Set the endpoint in
+#   /etc/default/github-backup:
 #     GITHUB_BACKUP_NOTIFY_URL=https://formester.com/f/yourFormId
-#   Mail is sent only when a repository fails. The form receives one report
-#   after each real sync or profile. Turn off reCAPTCHA on that form.
+#   A real sync or profile submits after every run. The log names every
+#   repository and what happened to it. A fast-forward includes git's
+#   diffstat. Uncomment --notify-on-error to
+#   submit only when a repository fails or the run stops early. A dry run
+#   does not submit. Turn off reCAPTCHA.
 # https://github.com/peternickol/github-backup/blob/master/README.md#run-report
 #
 # Schedule
@@ -1623,6 +1639,11 @@ option_file_template() {
 # Hide info, ok, and warning lines. Errors still print.
 # --quiet
 
+# Submit the form report only when a repository fails or the run stops early.
+# The default submits after every real sync or profile.
+# https://github.com/peternickol/github-backup/blob/master/README.md#run-report
+# --notify-on-error
+
 # Reset eligible branches and delete untracked files. Leave this commented.
 # https://github.com/peternickol/github-backup/blob/master/README.md#safety
 # --force-fast-forward
@@ -1641,18 +1662,6 @@ option_file_template() {
 # An uncommented token in that defaults file is kept. This file's
 # uncommented lines are kept too. Leave this commented.
 # --force
-
-# Install and update options
-# https://github.com/peternickol/github-backup/blob/master/README.md#install
-
-# Install or update the command and leave Bash completion alone.
-# --no-completion
-
-# Install Bash completion and exit.
-# --completion-only
-
-# Remove Bash completion and exit.
-# --uninstall-completion
 
 # Uninstall options
 # https://github.com/peternickol/github-backup/blob/master/README.md#uninstall
@@ -1675,7 +1684,6 @@ option_file_template() {
 # --config FILE
 
 # Older command forms. Do not uncomment.
-# --install
 # --update
 # --uninstall
 

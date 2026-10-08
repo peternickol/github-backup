@@ -29,12 +29,15 @@
 #   line replaces this one and is kept in shell history.
 # https://github.com/peternickol/github-backup/blob/master/README.md#configuration
 #
-# Mail and the run report
-#   These are not options in this file. Set them in /etc/default/github-backup:
-#     GITHUB_BACKUP_EMAIL=you@example.com
+# Run report
+#   The only notification is a form POST. Set the endpoint in
+#   /etc/default/github-backup:
 #     GITHUB_BACKUP_NOTIFY_URL=https://formester.com/f/yourFormId
-#   Mail is sent only when a repository fails. The form receives one report
-#   after each real sync or profile. Turn off reCAPTCHA on that form.
+#   A real sync or profile submits after every run. The log names every
+#   repository and what happened to it. A fast-forward includes git's
+#   diffstat. Uncomment --notify-on-error to
+#   submit only when a repository fails or the run stops early. A dry run
+#   does not submit. Turn off reCAPTCHA.
 # https://github.com/peternickol/github-backup/blob/master/README.md#run-report
 #
 # Schedule
@@ -83,6 +86,11 @@
 # Hide info, ok, and warning lines. Errors still print.
 # --quiet
 
+# Submit the form report only when a repository fails or the run stops early.
+# The default submits after every real sync or profile.
+# https://github.com/peternickol/github-backup/blob/master/README.md#run-report
+# --notify-on-error
+
 # Reset eligible branches and delete untracked files. Leave this commented.
 # https://github.com/peternickol/github-backup/blob/master/README.md#safety
 # --force-fast-forward
@@ -101,18 +109,6 @@
 # An uncommented token in that defaults file is kept. This file's
 # uncommented lines are kept too. Leave this commented.
 # --force
-
-# Install and update options
-# https://github.com/peternickol/github-backup/blob/master/README.md#install
-
-# Install or update the command and leave Bash completion alone.
-# --no-completion
-
-# Install Bash completion and exit.
-# --completion-only
-
-# Remove Bash completion and exit.
-# --uninstall-completion
 
 # Uninstall options
 # https://github.com/peternickol/github-backup/blob/master/README.md#uninstall
@@ -135,7 +131,6 @@
 # --config FILE
 
 # Older command forms. Do not uncomment.
-# --install
 # --update
 # --uninstall
 

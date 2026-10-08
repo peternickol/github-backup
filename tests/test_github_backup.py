@@ -176,6 +176,8 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         result = self.backup("--verbose")
 
         self.assertIn("fast-forwarded", result.stdout)
+        self.assertRegex(result.stdout, r"tracked\.txt\s+\|")
+        self.assertIn("1 file changed, 1 insertion(+), 1 deletion(-)", result.stdout)
         self.assertEqual(self.fixture.remote_head(), self.fixture.client_head())
         self.assertEqual("remote update\n", (self.fixture.client / "tracked.txt").read_text())
 
@@ -234,6 +236,8 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         result = self.backup("--dry-run")
 
         self.assertIn("would fast-forward 1 commit to origin/master", result.stdout)
+        self.assertRegex(result.stdout, r"tracked\.txt\s+\|")
+        self.assertIn("1 file changed, 1 insertion(+), 1 deletion(-)", result.stdout)
         self.assertNotIn("only if clean and behind", result.stdout)
         self.assertEqual(original_head, self.fixture.client_head())
         self.assertEqual(
@@ -358,14 +362,51 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         post = FormHandler.posts[0]
         self.assertEqual("application/json", post["accept"])
         self.assertTrue(post["content_type"].startswith("application/x-www-form-urlencoded"))
-        self.assertEqual("github-backup/1.4.3", post["user_agent"])
+        self.assertEqual("github-backup/1.4.5", post["user_agent"])
         self.assertEqual("github-backup", form_field("program"))
         self.assertEqual("ok", form_field("status"))
         self.assertIn("0 failed", form_field("summary"))
+        self.assertIn("sample: up to date", form_field("log"))
         self.assertIn("github-backup ", form_field("_subject"))
         self.assertNotIn("super-secret-token-value", post["raw"])
         self.assertNotIn("Bearer", post["raw"])
         self.assertNotIn(url, post["raw"])
+
+    def test_run_report_names_a_fast_forwarded_repository(self):
+        self.fixture.publish("remote update\n")
+
+        with form_server() as url:
+            result = self.backup(env={"GITHUB_BACKUP_NOTIFY_URL": url})
+
+        self.assertEqual(0, result.returncode)
+        self.assertIn("sample: fast-forwarded 1 commit to origin/master", form_field("log"))
+        self.assertRegex(form_field("log"), r"tracked\.txt\s+\|")
+        self.assertIn("1 file changed, 1 insertion(+), 1 deletion(-)", form_field("log"))
+        self.assertNotIn("sample: up to date", form_field("log"))
+        self.assertEqual(self.fixture.remote_head(), self.fixture.client_head())
+
+    def test_fast_forward_lists_every_changed_file(self):
+        (self.fixture.publisher / "added.txt").write_text("new file\n")
+        (self.fixture.publisher / "tracked.txt").write_text("changed\n")
+        run("git", "add", "added.txt", "tracked.txt", cwd=self.fixture.publisher)
+        run("git", "commit", "-m", "two files", cwd=self.fixture.publisher)
+        run("git", "push", cwd=self.fixture.publisher)
+
+        with form_server() as url:
+            result = self.backup("--quiet", env={"GITHUB_BACKUP_NOTIFY_URL": url})
+
+        self.assertEqual(0, result.returncode)
+        self.assertNotRegex(result.stdout, r"tracked\.txt\s+\|")
+        self.assertNotRegex(result.stdout, r"added\.txt\s+\|")
+        self.assertNotIn("files changed", result.stdout)
+        log = form_field("log")
+        self.assertIn("sample: fast-forwarded 1 commit to origin/master", log)
+        self.assertRegex(log, r"tracked\.txt\s+\|")
+        self.assertRegex(log, r"added\.txt\s+\|")
+        self.assertIn("2 files changed, 2 insertions(+), 1 deletion(-)", log)
+        self.assertLess(log.index("fast-forwarded"), log.index("tracked.txt"))
+        self.assertEqual("changed\n", (self.fixture.client / "tracked.txt").read_text())
+        self.assertEqual("new file\n", (self.fixture.client / "added.txt").read_text())
 
     def test_dry_run_does_not_submit_a_run_report(self):
         with form_server() as url:
@@ -387,6 +428,7 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         self.assertEqual("ok", form_field("status"))
         self.assertIn("1 skipped", form_field("summary"))
         self.assertIn("Skipping sample: 1 commit ahead of origin/", form_field("log"))
+        self.assertNotIn("sample: up to date", form_field("log"))
 
     def test_stopped_run_posts_a_failure_and_keeps_the_exit_status(self):
         missing = self.root / "does-not-exist"
@@ -430,6 +472,68 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         self.assertEqual(0, result.returncode)
         self.assertIn("Ignoring the run-report URL", result.stdout)
         self.assertNotIn("Submitted the run report.", result.stdout)
+
+    def test_notify_on_error_skips_a_successful_report(self):
+        with form_server() as url:
+            result = self.backup("--notify-on-error", env={"GITHUB_BACKUP_NOTIFY_URL": url})
+
+        self.assertEqual(0, result.returncode)
+        self.assertEqual([], FormHandler.posts)
+        self.assertNotIn("Submitted the run report.", result.stdout)
+
+    def test_notify_on_error_still_posts_a_failure(self):
+        missing = self.root / "does-not-exist"
+        with form_server() as url:
+            result = run(
+                SCRIPT,
+                "sync",
+                "--notify-on-error",
+                "--base-dir",
+                missing,
+                "--log-file",
+                self.log,
+                env={"GITHUB_BACKUP_NOTIFY_URL": url},
+                check=False,
+            )
+
+        self.assertEqual(1, result.returncode)
+        self.assertEqual("failed", form_field("status"))
+        self.assertIn("stopped before finishing", form_field("_subject"))
+
+    def test_notify_on_error_treats_skips_as_success(self):
+        (self.fixture.client / "local.txt").write_text("local commit\n")
+        run("git", "add", "local.txt", cwd=self.fixture.client)
+        run("git", "commit", "-m", "local only", cwd=self.fixture.client)
+
+        with form_server() as url:
+            result = self.backup("--notify-on-error", env={"GITHUB_BACKUP_NOTIFY_URL": url})
+
+        self.assertEqual(0, result.returncode)
+        self.assertEqual([], FormHandler.posts)
+
+    def test_email_setting_does_not_invoke_mail(self):
+        fake_bin = self.root / "fake-mail-bin"
+        fake_bin.mkdir()
+        marker = self.root / "mail-was-called"
+        for name in ("mail", "sendmail"):
+            tool = fake_bin / name
+            tool.write_text(f"#!/bin/sh\ntouch {marker}\nexit 0\n")
+            tool.chmod(0o755)
+        path = str(fake_bin) + os.pathsep + os.environ.get("PATH", "")
+
+        with form_server() as url:
+            result = self.backup(
+                env={
+                    "PATH": path,
+                    "GITHUB_BACKUP_EMAIL": "you@example.com",
+                    "GITHUB_BACKUP_NOTIFY_URL": url,
+                }
+            )
+
+        self.assertEqual(0, result.returncode)
+        self.assertFalse(marker.exists())
+        self.assertEqual(1, len(FormHandler.posts))
+        self.assertNotIn("mail nor sendmail", result.stdout)
 
 
 class FakeGitHubHandler(http.server.BaseHTTPRequestHandler):
@@ -768,6 +872,7 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
         self.assertIn("--force-fast-forward", completion)
         self.assertIn("--config", completion)
         self.assertIn("--token", completion)
+        self.assertIn("--notify-on-error", completion)
         self.assertIn("setup", completion)
         self.assertFalse(pathlib.Path(env["GITHUB_BACKUP_DEFAULTS_FILE"]).exists())
         self.assertFalse(pathlib.Path(env["GITHUB_BACKUP_SYSTEMD_DIR"], "github-backup.service").exists())
@@ -800,7 +905,7 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
         defaults = defaults_file.read_text()
         self.assertIn("GITHUB_BACKUP_PROFILE=alice", defaults)
         self.assertIn(f'GITHUB_BACKUP_BASE_DIR="{destination}"', defaults)
-        self.assertIn("# GITHUB_BACKUP_EMAIL=you@example.com", defaults)
+        self.assertNotIn("GITHUB_BACKUP_EMAIL", defaults)
         self.assertIn("# GITHUB_BACKUP_NOTIFY_URL=https://formester.com/f/yourFormId", defaults)
         self.assertIn(
             f'ExecStart={env["GITHUB_BACKUP_INSTALL_PATH"]} sync --config {env["GITHUB_BACKUP_CONFIG"]}',
@@ -835,16 +940,13 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
             "--verbose",
             "--debug",
             "--quiet",
+            "--notify-on-error",
             "--force-fast-forward",
             "--schedule",
             "--no-systemd",
-            "--no-completion",
-            "--completion-only",
-            "--uninstall-completion",
             "--purge-config",
             "--list-repos",
             "--config",
-            "--install",
             "--update",
             "--uninstall",
             "--version",
@@ -853,7 +955,6 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
             "\n# -f\n",
             "\n# -V\n",
             "\n# -h\n",
-            "GITHUB_BACKUP_EMAIL",
             "GITHUB_BACKUP_NOTIFY_URL",
             "https://github.com/peternickol/github-backup/blob/master/README.md#safety",
             "https://github.com/peternickol/github-backup/blob/master/README.md#commands",
@@ -863,13 +964,20 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
             "https://github.com/peternickol/github-backup/blob/master/README.md#configuration",
             "https://github.com/peternickol/github-backup/blob/master/README.md#profile",
             "https://github.com/peternickol/github-backup/blob/master/README.md#setup",
-            "https://github.com/peternickol/github-backup/blob/master/README.md#install",
             "https://github.com/peternickol/github-backup/blob/master/README.md#uninstall",
             "https://github.com/peternickol/github-backup/blob/master/README.md#list-repos",
             "https://github.com/peternickol/github-backup/blob/master/README.md#sync",
             "https://github.com/peternickol/github-backup/blob/master/README.md#version-and-help",
         ):
             self.assertIn(option, text)
+        for option in (
+            "--no-completion",
+            "--completion-only",
+            "--uninstall-completion",
+            "--install",
+            "GITHUB_BACKUP_EMAIL",
+        ):
+            self.assertNotIn(option, text)
         self.assertEqual([], [line for line in text.splitlines() if line.startswith("-")])
 
     def test_setup_preserves_an_edited_option_file(self):
@@ -1089,6 +1197,7 @@ class GitHubBackupHelpTests(unittest.TestCase):
         self.assertIn("GITHUB_BACKUP_NOTIFY_URL", result.stdout)
         self.assertIn("--config FILE", result.stdout)
         self.assertIn("--token TOKEN", result.stdout)
+        self.assertIn("--notify-on-error", result.stdout)
         self.assertIn("The backup command is: github-backup sync", result.stdout)
         self.assertNotIn("[ERROR]", result.stdout)
 
@@ -1447,6 +1556,30 @@ class GitHubBackupConfigFileTests(unittest.TestCase):
         self.assertIn("Submitted the run report.", result.stdout)
         self.assertNotIn("super-secret-token-value", FormHandler.posts[0]["raw"])
         self.assertNotIn("Bearer", FormHandler.posts[0]["raw"])
+
+    def test_config_file_notify_on_error_skips_a_successful_report(self):
+        self.write_config(
+            "\n".join(
+                [
+                    f"--base-dir {self.fixture.client.parent}",
+                    f"--log-file {self.log}",
+                    "--notify-on-error",
+                ]
+            )
+            + "\n"
+        )
+        with form_server() as url:
+            result = run(
+                SCRIPT,
+                "sync",
+                "--config",
+                self.config,
+                env={"GITHUB_BACKUP_NOTIFY_URL": url},
+            )
+
+        self.assertEqual(0, result.returncode)
+        self.assertEqual([], FormHandler.posts)
+        self.assertNotIn("Submitted the run report.", result.stdout)
 
     def test_setup_uses_the_config_file_without_copying_the_token(self):
         env = {
