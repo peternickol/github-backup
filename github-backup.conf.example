@@ -42,12 +42,3 @@
 
 # Reset eligible branches and delete untracked files. Leave commented.
 # --force-fast-forward
-
-# Timer calendar. Default: *-*-* 02:00:00. Then run setup --force.
-# --schedule *-*-* 02:00:00
-
-# Write configuration and skip the service and timer.
-# --no-systemd
-
-# On setup, replace units and rewrite the defaults file. Leave commented.
-# --force

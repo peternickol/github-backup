@@ -64,8 +64,7 @@ REPORT_RUN=0
 REPORT_FINISHED=0
 REPORT_SUBMITTED=0
 REPORT_ABORTED=0
-REPORT_NOTES=""
-REPORT_NOTE_COUNT=0
+REPORT_DETAIL=""
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     C_INFO=$'\e[36m'
@@ -94,7 +93,6 @@ die() {
     error "$*"
     if [[ "$REPORT_RUN" -eq 1 ]]; then
         REPORT_ABORTED=1
-        append_report_note "$*"
     fi
     exit 1
 }
@@ -283,11 +281,14 @@ Run report:
   endpoint, sync and profile POST one report after every real run.
   --notify-on-error submits
   only when a repository fails or the run stops early. A dry run does not
-  submit. The log names every repository and what happened to it. A
-  fast-forward also shows git's diffstat: the files and how many lines
-  changed. The form is the only notification. The fields are _subject, host,
-  program, status, summary, and log. A failed POST is a warning and does not
-  change the exit status. The GitHub token is not included.
+  submit. The form sends one summary for the whole run. The subject is
+  the count line. Under it, the same submission lists each repository
+  that changed, was cloned, failed, or was skipped, and git's diffstat
+  names the files in a fast-forward. Unchanged repositories stay in the
+  count. The log file still names every repository. The fields are
+  _subject, host, program, status, and summary. A failed POST is a
+  warning and does not change the exit status. The GitHub token is not
+  included.
 
 With no arguments, this help is printed and nothing is backed up.
 The backup command is: $PROGRAM sync
@@ -783,13 +784,29 @@ git_with_auth() {
     fi
 }
 
+append_report_line() {
+    local line="$1"
+    line="${line//$'\r'/}"
+    line="${line%%$'\n'*}"
+    [[ -n "${line//[[:space:]]/}" ]] || return 0
+    # One field. A newline in that field was mailed as its own message.
+    if [[ "$REPORT_DETAIL" == *$'...\n' ]]; then
+        return 0
+    fi
+    if [[ ${#REPORT_DETAIL} -ge 100000 ]]; then
+        REPORT_DETAIL+=$'...\n'
+        return 0
+    fi
+    REPORT_DETAIL+="$line"$'\n'
+}
+
 record_skip() {
     local repo="$1"
     local reason="$2"
     skipped_count=$((skipped_count + 1))
     warn "Skipping $(basename "$repo"): $reason"
     log_message WARN "Skipped $repo: $reason"
-    append_report_note "Skipping $(basename "$repo"): $reason"
+    append_report_line "$(basename "$repo"): $reason"
 }
 
 record_failure() {
@@ -807,13 +824,7 @@ record_failure() {
     failed_count=$((failed_count + 1))
     error "$(basename "$repo"): $reason"
     log_message ERROR "$repo: $reason"
-    append_report_note "$(basename "$repo"): $reason"
-}
-
-record_result() {
-    local name="$1"
-    local outcome="$2"
-    append_report_note "$name: $outcome"
+    append_report_line "$(basename "$repo"): $reason"
 }
 
 record_diffstat() {
@@ -828,7 +839,7 @@ record_diffstat() {
             printf '  %s\n' "$line"
         fi
         log_message INFO "$line"
-        append_report_note "  $line"
+        append_report_line "  $line"
     done < <(git --no-pager -C "$repo" -c color.ui=never diff --stat "$old" "$new" 2>/dev/null || true)
 }
 
@@ -947,14 +958,12 @@ sync_repo() {
             unchanged_count=$((unchanged_count + 1))
             [[ "$VERBOSE" -eq 1 ]] && ok "$name: up to date"
             log_message OK "$repo up to date"
-            record_result "$name" "up to date"
             return 0
         fi
         if [[ "$DRY_RUN" -eq 1 ]]; then
             info "$name: would reset to $upstream and delete untracked files"
             updated_count=$((updated_count + 1))
             log_message INFO "$repo would reset to $upstream"
-            record_result "$name" "would reset to $upstream and delete untracked files"
             record_diffstat "$repo" "$local_oid" "$upstream_oid"
             return 0
         fi
@@ -970,7 +979,7 @@ sync_repo() {
         updated_count=$((updated_count + 1))
         ok "$name aligned to $upstream"
         log_message OK "$repo aligned to $upstream"
-        record_result "$name" "aligned to $upstream"
+        append_report_line "$name: aligned to $upstream"
         record_diffstat "$repo" "$local_oid" "$upstream_oid"
         return 0
     fi
@@ -984,7 +993,6 @@ sync_repo() {
         unchanged_count=$((unchanged_count + 1))
         [[ "$VERBOSE" -eq 1 ]] && ok "$name: up to date"
         log_message OK "$repo up to date"
-        record_result "$name" "up to date"
         return 0
     fi
 
@@ -995,7 +1003,6 @@ sync_repo() {
             info "$name: would fast-forward $(commit_phrase "$behind") to $upstream"
             updated_count=$((updated_count + 1))
             log_message INFO "$repo would fast-forward $(commit_phrase "$behind") to $upstream"
-            record_result "$name" "would fast-forward $(commit_phrase "$behind") to $upstream"
             record_diffstat "$repo" "$local_oid" "$upstream_oid"
             return 0
         fi
@@ -1003,7 +1010,7 @@ sync_repo() {
             updated_count=$((updated_count + 1))
             ok "$name fast-forwarded $(commit_phrase "$behind") to $upstream"
             log_message OK "$repo fast-forwarded to $upstream"
-            record_result "$name" "fast-forwarded $(commit_phrase "$behind") to $upstream"
+            append_report_line "$name: fast-forwarded $(commit_phrase "$behind") to $upstream"
             record_diffstat "$repo" "$local_oid" "$upstream_oid"
         else
             record_failure "$repo" "fast-forward failed: $output"
@@ -1093,7 +1100,6 @@ github_repo_rows() {
     local auth_login="" kind="" endpoint page response count first_name="" page_marker=""
     if ! validate_owner "$owner"; then
         error "Invalid GitHub profile name: $owner"
-        append_report_note "Invalid GitHub profile name: $owner"
         return 2
     fi
     auth_login="$(authenticated_login)"
@@ -1121,7 +1127,6 @@ except Exception:
 print(len(data) if isinstance(data, list) else -1)' <<< "$response" 2>/dev/null || printf '%s' '-1')"
         if [[ "$count" -lt 0 ]]; then
             error "Could not parse the GitHub repository list for '$owner'."
-            append_report_note "Could not parse the GitHub repository list for '$owner'."
             return 2
         fi
         if [[ "$count" -eq 0 ]]; then
@@ -1158,7 +1163,6 @@ for repo in json.load(sys.stdin):
     print("\t".join(str(field) for field in fields))
 ' <<< "$response" || {
             error "Could not parse the GitHub repository list for '$owner'."
-            append_report_note "Could not parse the GitHub repository list for '$owner'."
             return 2
         }
         page=$((page + 1))
@@ -1235,7 +1239,6 @@ clone_repo() {
     if [[ "$DRY_RUN" -eq 1 ]]; then
         info "$owner/$name: would clone into $destination"
         cloned_count=$((cloned_count + 1))
-        record_result "$owner/$name" "would clone into $destination"
         return 0
     fi
 
@@ -1249,7 +1252,7 @@ clone_repo() {
         cloned_count=$((cloned_count + 1))
         ok "Cloned $owner/$name"
         log_message OK "Cloned $destination"
-        record_result "$owner/$name" "cloned"
+        append_report_line "$owner/$name: cloned"
     else
         record_failure "$destination" "clone failed: $output"
     fi
@@ -1297,26 +1300,6 @@ finish_backup() {
     [[ "$failed_count" -eq 0 ]]
 }
 
-append_report_note() {
-    local line="$1"
-    line="${line//$'\r'/}"
-    line="${line%%$'\n'*}"
-    [[ -n "$line" ]] || return 0
-    if [[ "$REPORT_NOTE_COUNT" -gt 2000 ]]; then
-        return 0
-    fi
-    if [[ "${#line}" -gt 500 ]]; then
-        line="${line:0:500}..."
-    fi
-    if [[ "$REPORT_NOTE_COUNT" -eq 2000 || "${#REPORT_NOTES}" -ge 262144 ]]; then
-        REPORT_NOTES+=$'...\n'
-        REPORT_NOTE_COUNT=2001
-        return 0
-    fi
-    REPORT_NOTES+="$line"$'\n'
-    REPORT_NOTE_COUNT=$((REPORT_NOTE_COUNT + 1))
-}
-
 report_host() {
     local host="${HOSTNAME:-}"
     if [[ -z "$host" ]]; then
@@ -1337,8 +1320,11 @@ notify_url_acceptable() {
     [[ "$url" == http://* || "$url" == https://* ]]
 }
 
-# Post one application/x-www-form-urlencoded report. Other scripts can copy
-# this request: fields are _subject, host, program, status, summary, and log.
+# Post one application/x-www-form-urlencoded report.
+# The summary is one field: the count line, then each repository that
+# changed, was cloned, failed, or was skipped. File names come from
+# git diff --stat. Lines are joined with a line separator, not a newline,
+# because a newline in the form field was delivered as a separate email.
 # Accept: application/json asks the endpoint for JSON when it supports that.
 # Formester's form endpoint is one host this works with.
 submit_run_report() {
@@ -1348,7 +1334,7 @@ submit_run_report() {
     [[ "$DRY_RUN" -eq 0 ]] || return 0
     [[ -n "$NOTIFY_URL" ]] || return 0
 
-    local host status summary subject
+    local host status summary subject detail detail_line
     host="$(report_host)"
     if [[ "$REPORT_ABORTED" -eq 1 || "$failed_count" -gt 0 ]]; then
         status="failed"
@@ -1370,14 +1356,22 @@ submit_run_report() {
         return 0
     fi
 
-    summary="Summary: $updated_count updated, $cloned_count cloned, $unchanged_count unchanged, $skipped_count skipped, $failed_count failed"
     if [[ "$REPORT_ABORTED" -eq 1 && "$failed_count" -eq 0 ]]; then
-        subject="$PROGRAM $host: stopped before finishing"
+        summary="Summary: stopped before finishing"
     else
-        subject="$PROGRAM $host: $failed_count failed, $skipped_count skipped, $updated_count updated"
+        summary="Summary: $updated_count updated, $cloned_count cloned, $unchanged_count unchanged, $skipped_count skipped, $failed_count failed"
     fi
-    if [[ "${#subject}" -gt 180 ]]; then
-        subject="${subject:0:179}..."
+    subject="$summary"
+    detail=""
+    while IFS= read -r detail_line || [[ -n "$detail_line" ]]; do
+        [[ -n "$detail_line" ]] || continue
+        if [[ -n "$detail" ]]; then
+            detail+=$'\u2028'
+        fi
+        detail+="$detail_line"
+    done <<< "$REPORT_DETAIL"
+    if [[ -n "$detail" ]]; then
+        summary+=$'\u2028'"$detail"
     fi
 
     if ! curl --silent --fail \
@@ -1393,7 +1387,6 @@ submit_run_report() {
         --data-urlencode "program=$PROGRAM" \
         --data-urlencode "status=$status" \
         --data-urlencode "summary=$summary" \
-        --data-urlencode "log=$REPORT_NOTES" \
         -o /dev/null \
         -- "$NOTIFY_URL" \
         2>/dev/null
@@ -1619,15 +1612,6 @@ option_file_template() {
 
 # Reset eligible branches and delete untracked files. Leave commented.
 # --force-fast-forward
-
-# Timer calendar. Default: *-*-* 02:00:00. Then run setup --force.
-# --schedule *-*-* 02:00:00
-
-# Write configuration and skip the service and timer.
-# --no-systemd
-
-# On setup, replace units and rewrite the defaults file. Leave commented.
-# --force
 EOF
 }
 

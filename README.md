@@ -15,8 +15,8 @@ Settings live in `/etc/github-backup/github-backup.conf`. `setup` installs
 that file with every option commented out. Remove the leading `# ` from a
 line to turn it on. The timer and a plain `github-backup sync` both read it.
 A switch on the command line replaces the same setting for that one run.
-Install, update, and uninstall switches stay on the command line. See
-[Option file](#option-file).
+Setup, install, update, and uninstall switches stay on the command line.
+See [Option file](#option-file).
 
 The installed command is `/usr/local/bin/github-backup`. With no arguments it
 prints help and exits. A backup is `github-backup sync`.
@@ -42,9 +42,9 @@ token comes from [Generate a token](#generate-a-token).
 
 `sync` then downloads every repository owned by that account into the base
 directory. To back up a different user or organization, also uncomment
-`--profile`. The timer is already `*-*-* 02:00:00`. To change that calendar,
-uncomment `--schedule` and run `sudo github-backup setup --force` so the
-timer stores it.
+`--profile`. The first `setup` stores the timer as `*-*-* 02:00:00`. Pass
+`--schedule` on that command for a different calendar, and pass it again
+with `setup --force`.
 
 ```bash
 sudo github-backup enable
@@ -247,53 +247,44 @@ and does not print a summary. An unknown or empty profile name exits `1`.
 Prepare this machine. The first run creates the base directory, creates the
 log file when it can, writes `/etc/default/github-backup` and
 `/etc/github-backup/github-backup.conf` mode `600`, and installs the systemd
-units. It does not arm the timer. The option file lists each option
+units. It does not arm the timer. The option file lists each backup option
 commented out, with a short note. The top of the file links to the
-repository. Day to
-day, uncomment lines there. Install and uninstall options stay on the
-command line.
+repository. Day to day, uncomment lines there. `setup` creates that file, so
+`--schedule`, `--no-systemd`, and `--force` stay on the `setup` command.
+Install and uninstall options stay on the command line too.
 
 ```text
 --base-dir /mnt/nas/github
 --profile YOUR_GITHUB_USERNAME
 --log-file /var/log/github-backup.log
---schedule *-*-* 02:00:00
 ```
 
 ```bash
-sudo github-backup setup
-sudo github-backup setup --force
+sudo github-backup setup --schedule '*-*-* 02:00:00'
+sudo github-backup setup --force --schedule 'Mon *-*-* 03:00:00'
 sudo github-backup setup --no-systemd
 ```
-
-A flag on that command replaces the same line from the file for this setup.
-`sudo github-backup setup --force --schedule 'Mon *-*-* 03:00:00'` stores that
-calendar in the timer and leaves the option file's `--schedule` line as it was.
 
 A second `setup` keeps an existing defaults file, an existing option file, and
 existing unit files. It still creates a missing base directory or log file from
 the paths in effect for this run, but it does not save them unless you pass
 `--force`. Pass `--force` to replace the units and rewrite the defaults file.
-Uncommented lines in the option file supply the values. A flag on this
-command replaces the same value for this run. `--force` refreshes the
+Uncommented lines in the option file supply the backup settings. A flag on
+this command replaces the same value for this run. `--force` refreshes the
 comments in the option file and keeps every uncommented line, including
-`--token` and `--schedule`. The schedule is stored in the timer. When
-`--schedule` is commented, this command does not pass `--schedule`, and
-`GITHUB_BACKUP_SCHEDULE` is unset, the timer goes back to `*-*-* 02:00:00`. An uncommented `GITHUB_BACKUP_TOKEN=` line in
-the defaults file is copied into the new defaults file. `setup` does not copy
-a token out of the environment or out of the option file into the defaults
-file. The notify URL, base directory, profile, log path, and skip list are
-rewritten from the option file when those lines are uncommented, and otherwise
-from the environment, then the current defaults file.
+`--token`. The schedule is stored in the timer. Pass `--schedule` again with
+`--force`. When this command does not pass `--schedule`, and
+`GITHUB_BACKUP_SCHEDULE` is unset, the timer goes back to `*-*-* 02:00:00`.
+An uncommented `GITHUB_BACKUP_TOKEN=` line in the defaults file is copied
+into the new defaults file. `setup` does not copy a token out of the
+environment or out of the option file into the defaults file. The notify
+URL, base directory, profile, log path, and skip list are rewritten from
+the option file when those lines are uncommented, and otherwise from the
+environment, then the current defaults file.
 
 `--no-systemd` writes the configuration and base directory and skips the units,
 including when `--force` is also set. An existing timer is left unchanged.
 Use that with cron. The schedule must be a single line.
-
-These options belong in the option file: `--base-dir`, `--profile`,
-`--schedule`, `--log-file`, `--skip-list`. `--no-systemd` and `--force` stay
-on the `setup` command. `--force` in the option file would rewrite the units
-on every `setup`. Leave that line commented.
 
 ### `install`
 
@@ -484,11 +475,12 @@ exits `1`.
 
 ## Options
 
-Backup and setup options normally live in
+Backup options normally live in
 `/etc/github-backup/github-backup.conf`. See [Option file](#option-file).
-The table is the full list. A command-line flag replaces the same option
-from the file for that one run. Install, update, and uninstall options are
-command-line only.
+The table is the full list. A command-line flag replaces the same backup
+option from the file for that one run. Setup, install, update, and
+uninstall options are command-line only. `setup` creates the option file,
+so `--schedule`, `--no-systemd`, and `--force` are not lines in it.
 
 | Option | Use it with | What it does |
 |---|---|---|
@@ -507,9 +499,9 @@ command-line only.
 | `--log-file FILE` | `sync`, `profile`, `setup` | Log path. Put it in the option file. On `setup --force`, also the path saved in the defaults file. Default: `/var/log/github-backup.log`. |
 | `--token TOKEN` | any command | GitHub token. With no `--profile`, `sync` downloads every repository that account owns. Put it in the option file so later runs do not need it again. A command-line value replaces it for that run and stays in shell history. |
 | `--config FILE` | any command | Use `FILE` instead of `/etc/github-backup/github-backup.conf`. One option per line, including `--token`. On `setup`, the service runs `sync --config FILE` only when `FILE` is not that standard path. |
-| `--schedule CALENDAR` | `setup` | systemd `OnCalendar` value, stored in the timer when `setup` writes the units. Put it in the option file, then run `setup --force`. Default: `*-*-* 02:00:00`. |
-| `--no-systemd` | `setup` | Write the configuration and skip unit installation. |
-| `--force`, `-f` | `install`, `setup` | Overwrite an existing binary, completion file, or unit. On `setup`, also rewrite the configuration. |
+| `--schedule CALENDAR` | `setup` | systemd `OnCalendar` value, stored in the timer when `setup` writes the units. Pass it on the `setup` command. Default: `*-*-* 02:00:00`. |
+| `--no-systemd` | `setup` | Write the configuration and skip unit installation. Command line only. |
+| `--force`, `-f` | `install`, `setup` | Overwrite an existing binary, completion file, or unit. On `setup`, also rewrite the configuration. Command line only. |
 | `--no-completion` | `install`, `update` | Do not install or refresh Bash completion. |
 | `--completion-only` | `install` | Install Bash completion and exit. |
 | `--uninstall-completion` | `install` | Remove Bash completion and exit. |
@@ -543,9 +535,9 @@ is rejected.
 The installed file lists each option commented out, with a short note. The
 top of the file links to the repository. Commands stay
 on the command line, including `list-repos`, `--version`, `--help`, and
-`--config`. Install and uninstall options (`--no-completion`,
-`--completion-only`, `--uninstall-completion`, `--install`, and
-`--purge-config`) stay there too.
+`--config`. Setup, install, and uninstall options (`--schedule`,
+`--no-systemd`, `--force`, `--no-completion`, `--completion-only`,
+`--uninstall-completion`, `--install`, and `--purge-config`) stay there too.
 `github-backup.conf.example` is the same text. Remove the leading `# ` from a
 line to set that option:
 
@@ -588,8 +580,9 @@ when the file is there, so the unit does not pass `--config`.
 then runs `sync --config FILE`. Pass `--config FILE` again whenever
 `setup --force` rewrites the units. Otherwise the service returns to the
 standard option file. `setup --force` refreshes the comments in the installed
-option file and keeps uncommented lines. `--schedule` does not need to be
-repeated: an uncommented line in the option file is enough.
+option file and keeps uncommented lines. Pass `--schedule` again when
+`setup --force` rewrites the timer, or the calendar returns to
+`*-*-* 02:00:00`.
 
 ## Configuration
 
@@ -703,13 +696,14 @@ That form POST is the only notification. After every real `sync` or
 or the run stops early. A command-line `--notify-on-error` does the same for
 that run. Skips alone stay a success and do not submit when that option is
 set. `list-repos`, `setup`, `install`, and a dry run do not submit. The full
-history stays in the log file. The `log` field names every repository from
-the run and what happened to it:
-up to date, fast-forwarded, cloned, skipped, or failed. Under a
-fast-forward, the log includes the diffstat `git pull` prints: each changed
-file and how many lines changed, such as `src/app.py | 12 ++--` and
-`1 file changed, 4 insertions(+), 8 deletions(-)`. The same stat is printed
-on the console. `--quiet` hides it there and still sends it in the report.
+history stays in the log file. The form sends one summary for the
+whole run. The subject is the count line:
+`Summary: N updated, N cloned, N unchanged, N skipped, N failed`.
+The same submission then names each repository that changed, was cloned,
+failed, or was skipped. A fast-forward includes the files from
+`git diff --stat`. Unchanged repositories stay in the count, so a quiet
+night is that one line. The log file still names every repository.
+`--quiet` hides the stat on the console. The log file still records it.
 
 The URL is the secret. The option file is mode `600`.
 `GITHUB_BACKUP_NOTIFY_URL` is used when `--notify-url` is left commented.
@@ -726,12 +720,11 @@ challenge on that form. A server cannot solve one.
 
 | Field | Value |
 |---|---|
-| `_subject` | One-line subject, stored as a field of that name. |
+| `_subject` | The count line. Formester uses it as the email subject. |
 | `host` | Short hostname. |
 | `program` | `github-backup`. |
 | `status` | `ok` or `failed`. Skips alone stay `ok`. |
-| `summary` | `Summary: N updated, N cloned, N unchanged, N skipped, N failed`. |
-| `log` | One line per repository and what happened to it. A fast-forward is followed by git's diffstat: the files and how many lines changed. Also lines from a run that stops early. At most 2000 lines and 256 KB. |
+| `summary` | The count line, then each repository that changed, was cloned, failed, or was skipped, with the files from `git diff --stat`. One submission. |
 
 ```text
 --notify-url https://formester.com/f/yourFormId
@@ -752,27 +745,21 @@ The form only hears from a run that started.
 ### Schedule
 
 The timer's `OnCalendar` is the interval. The default is every day at 02:00.
-To change it, uncomment `--schedule` in the option file and run
-`setup --force`. The timer stores that calendar. It also waits a random time
-up to 30 minutes after the mark (`RandomizedDelaySec=30m`) and catches up
-after downtime (`Persistent=true`).
-
-```text
---schedule *-*-* 02:00:00
---schedule daily
---schedule *-*-* 03:30:00
-```
+Pass `--schedule` to `setup` to choose another calendar. The timer stores
+that value. It also waits a random time up to 30 minutes after the mark
+(`RandomizedDelaySec=30m`) and catches up after downtime (`Persistent=true`).
 
 ```bash
-sudo github-backup setup --force
+sudo github-backup setup --schedule '*-*-* 02:00:00'
+sudo github-backup setup --schedule 'daily'
+sudo github-backup setup --force --schedule '*-*-* 03:30:00'
 sudo github-backup enable
 ```
 
-`--schedule` on the `setup` command replaces the option-file line for that
-run. `GITHUB_BACKUP_SCHEDULE` supplies the calendar when the option file
-leaves `--schedule` commented and the command does not pass it. It is not
-stored in `/etc/default/github-backup`. A schedule that contains a newline
-is rejected.
+`GITHUB_BACKUP_SCHEDULE` supplies the calendar when the command does not pass
+`--schedule`. It is not stored in `/etc/default/github-backup`. A schedule
+that contains a newline is rejected. `setup --force` writes the timer again,
+so pass `--schedule` again or the calendar returns to `*-*-* 02:00:00`.
 
 Cron, after `setup --no-systemd`:
 
@@ -814,7 +801,7 @@ root when their directories are writable by you.
 |---|---|
 | `/usr/local/bin/github-backup` | The command. |
 | `/etc/default/github-backup` | Base directory, profile, log, notify URL, and skip list. Mode `600`. |
-| `/etc/github-backup/github-backup.conf` | Each option commented out, with a short note. The top of the file links to the repository. Uncomment a line to set it. `--token` and `--notify-url` live here. Install and uninstall options are not in this file. Mode `600`. |
+| `/etc/github-backup/github-backup.conf` | Each option commented out, with a short note. The top of the file links to the repository. Uncomment a line to set it. `--token` and `--notify-url` live here. Setup, install, and uninstall options are not in this file. Mode `600`. |
 | `/etc/systemd/system/github-backup.service` | Oneshot service. `ExecStart` is `github-backup sync`. It reads `/etc/github-backup/github-backup.conf` when that file exists. `setup --config FILE` uses `github-backup sync --config FILE` when `FILE` is a different path. It runs as root. |
 | `/etc/systemd/system/github-backup.timer` | Calendar timer for that service. |
 | `/var/log/github-backup.log` | Default log. `setup` creates it mode `640` when run as root. |

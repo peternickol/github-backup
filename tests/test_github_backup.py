@@ -391,9 +391,13 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         self.assertEqual("github-backup/1.4.10", post["user_agent"])
         self.assertEqual("github-backup", form_field("program"))
         self.assertEqual("ok", form_field("status"))
-        self.assertIn("0 failed", form_field("summary"))
-        self.assertIn("private-one: up to date", form_field("log"))
-        self.assertIn("github-backup ", form_field("_subject"))
+        self.assertEqual(
+            "Summary: 0 updated, 0 cloned, 1 unchanged, 0 skipped, 0 failed",
+            form_field("summary"),
+        )
+        self.assertEqual(form_field("summary"), form_field("_subject"))
+        self.assertNotIn("log", post["fields"])
+        self.assertNotIn("\n", post["raw"])
         self.assertNotIn("super-secret-token-value", post["raw"])
         self.assertNotIn("Bearer", post["raw"])
         self.assertNotIn(url, post["raw"])
@@ -405,10 +409,27 @@ class GitHubBackupSafetyTests(unittest.TestCase):
             result = self.backup(env={"GITHUB_BACKUP_NOTIFY_URL": url})
 
         self.assertEqual(0, result.returncode)
-        self.assertIn("sample: fast-forwarded 1 commit to origin/master", form_field("log"))
-        self.assertRegex(form_field("log"), r"tracked\.txt\s+\|")
-        self.assertIn("1 file changed, 1 insertion(+), 1 deletion(-)", form_field("log"))
-        self.assertNotIn("sample: up to date", form_field("log"))
+        self.assertEqual(1, len(FormHandler.posts))
+        self.assertNotIn("log", FormHandler.posts[0]["fields"])
+        self.assertNotIn("\n", FormHandler.posts[0]["raw"])
+        self.assertNotIn("%0A", FormHandler.posts[0]["raw"])
+        self.assertNotIn("%0a", FormHandler.posts[0]["raw"])
+        shown = form_field("summary").replace("\u2028", "\n")
+        self.assertNotIn("\n", form_field("_subject"))
+        self.assertEqual(
+            "Summary: 1 updated, 0 cloned, 0 unchanged, 0 skipped, 0 failed",
+            form_field("_subject"),
+        )
+        self.assertTrue(shown.startswith(form_field("_subject") + "\n"))
+        self.assertIn("sample: fast-forwarded 1 commit to origin/master", shown)
+        self.assertRegex(shown, r"tracked\.txt\s+\|")
+        self.assertIn("1 file changed, 1 insertion(+), 1 deletion(-)", shown)
+        self.assertLess(shown.index("fast-forwarded"), shown.index("tracked.txt"))
+        self.assertIn("sample fast-forwarded 1 commit to origin/master", result.stdout)
+        self.assertRegex(result.stdout, r"tracked\.txt\s+\|")
+        self.assertIn("1 file changed, 1 insertion(+), 1 deletion(-)", result.stdout)
+        logged = self.log.read_text()
+        self.assertRegex(logged, r"tracked\.txt\s+\|")
         self.assertEqual(self.fixture.remote_head(), self.fixture.client_head())
 
     def test_fast_forward_lists_every_changed_file(self):
@@ -422,15 +443,28 @@ class GitHubBackupSafetyTests(unittest.TestCase):
             result = self.backup("--quiet", env={"GITHUB_BACKUP_NOTIFY_URL": url})
 
         self.assertEqual(0, result.returncode)
+        self.assertEqual(1, len(FormHandler.posts))
+        self.assertNotIn("log", FormHandler.posts[0]["fields"])
+        self.assertNotIn("\n", FormHandler.posts[0]["raw"])
+        self.assertNotIn("%0A", FormHandler.posts[0]["raw"])
+        shown = form_field("summary").replace("\u2028", "\n")
+        self.assertEqual(
+            "Summary: 1 updated, 0 cloned, 0 unchanged, 0 skipped, 0 failed",
+            form_field("_subject"),
+        )
+        self.assertRegex(shown, r"tracked\.txt\s+\|")
+        self.assertRegex(shown, r"added\.txt\s+\|")
+        self.assertIn("2 files changed, 2 insertions(+), 1 deletion(-)", shown)
+        self.assertLess(shown.index("fast-forwarded"), shown.index("tracked.txt"))
         self.assertNotRegex(result.stdout, r"tracked\.txt\s+\|")
         self.assertNotRegex(result.stdout, r"added\.txt\s+\|")
         self.assertNotIn("files changed", result.stdout)
-        log = form_field("log")
-        self.assertIn("sample: fast-forwarded 1 commit to origin/master", log)
-        self.assertRegex(log, r"tracked\.txt\s+\|")
-        self.assertRegex(log, r"added\.txt\s+\|")
-        self.assertIn("2 files changed, 2 insertions(+), 1 deletion(-)", log)
-        self.assertLess(log.index("fast-forwarded"), log.index("tracked.txt"))
+        logged = self.log.read_text()
+        self.assertIn("sample fast-forwarded", logged)
+        self.assertRegex(logged, r"tracked\.txt\s+\|")
+        self.assertRegex(logged, r"added\.txt\s+\|")
+        self.assertIn("2 files changed, 2 insertions(+), 1 deletion(-)", logged)
+        self.assertLess(logged.index("fast-forwarded"), logged.index("tracked.txt"))
         self.assertEqual("changed\n", (self.fixture.client / "tracked.txt").read_text())
         self.assertEqual("new file\n", (self.fixture.client / "added.txt").read_text())
 
@@ -451,10 +485,17 @@ class GitHubBackupSafetyTests(unittest.TestCase):
             result = self.backup(env={"GITHUB_BACKUP_NOTIFY_URL": url})
 
         self.assertEqual(0, result.returncode)
+        self.assertEqual(1, len(FormHandler.posts))
         self.assertEqual("ok", form_field("status"))
-        self.assertIn("1 skipped", form_field("summary"))
-        self.assertIn("Skipping sample: 1 commit ahead of origin/", form_field("log"))
-        self.assertNotIn("sample: up to date", form_field("log"))
+        self.assertNotIn("log", FormHandler.posts[0]["fields"])
+        self.assertNotIn("\n", FormHandler.posts[0]["raw"])
+        self.assertNotIn("%0A", FormHandler.posts[0]["raw"])
+        shown = form_field("summary").replace("\u2028", "\n")
+        self.assertEqual(
+            "Summary: 0 updated, 0 cloned, 0 unchanged, 1 skipped, 0 failed",
+            form_field("_subject"),
+        )
+        self.assertEqual(form_field("_subject") + "\nsample: 1 commit ahead of origin/master", shown)
 
     def test_stopped_run_posts_a_failure_and_keeps_the_exit_status(self):
         missing = self.root / "does-not-exist"
@@ -471,9 +512,12 @@ class GitHubBackupSafetyTests(unittest.TestCase):
             )
 
         self.assertEqual(1, result.returncode)
+        self.assertEqual(1, len(FormHandler.posts))
         self.assertEqual("failed", form_field("status"))
-        self.assertIn("stopped before finishing", form_field("_subject"))
-        self.assertIn("Base directory does not exist", form_field("log"))
+        self.assertEqual("Summary: stopped before finishing", form_field("_subject"))
+        self.assertEqual("Summary: stopped before finishing", form_field("summary"))
+        self.assertNotIn("log", FormHandler.posts[0]["fields"])
+        self.assertIn("Base directory does not exist", result.stdout)
 
     def test_run_report_failure_does_not_fail_the_backup(self):
         with form_server(status=500) as url:
@@ -523,8 +567,9 @@ class GitHubBackupSafetyTests(unittest.TestCase):
             )
 
         self.assertEqual(1, result.returncode)
+        self.assertEqual(1, len(FormHandler.posts))
         self.assertEqual("failed", form_field("status"))
-        self.assertIn("stopped before finishing", form_field("_subject"))
+        self.assertEqual("Summary: stopped before finishing", form_field("_subject"))
 
     def test_notify_on_error_treats_skips_as_success(self):
         (self.fixture.client / "local.txt").write_text("local commit\n")
@@ -1069,8 +1114,6 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
             "--notify-url",
             "--notify-on-error",
             "--force-fast-forward",
-            "--schedule",
-            "--no-systemd",
             "--notify-url https://formester.com/f/yourFormId",
             "https://github.com/peternickol/github-backup",
         ):
@@ -1084,6 +1127,9 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
             "--update",
             "--uninstall",
             "--purge-config",
+            "--schedule",
+            "--no-systemd",
+            "\n# --force\n",
             "--list-repos",
             "--config",
             "--version",
@@ -1734,7 +1780,8 @@ class GitHubBackupConfigFileTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stdout)
         self.assertIn("Submitted the run report.", result.stdout)
         self.assertEqual(1, len(FormHandler.posts))
-        self.assertIn("sample: up to date", form_field("log"))
+        self.assertIn("unchanged", form_field("summary"))
+        self.assertNotIn("log", FormHandler.posts[0]["fields"])
 
     def test_command_line_notify_url_replaces_the_option_file(self):
         with form_server() as url:
@@ -1759,7 +1806,8 @@ class GitHubBackupConfigFileTests(unittest.TestCase):
 
         self.assertEqual(0, result.returncode, result.stdout)
         self.assertEqual(1, len(FormHandler.posts))
-        self.assertIn("sample: up to date", form_field("log"))
+        self.assertIn("unchanged", form_field("summary"))
+        self.assertNotIn("log", FormHandler.posts[0]["fields"])
 
     def test_setup_uses_the_config_file_without_copying_the_token(self):
         env = {
