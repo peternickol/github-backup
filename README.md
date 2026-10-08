@@ -93,7 +93,7 @@ issues, releases, and Git LFS objects are not downloaded.
 | `is-active` | Report whether the timer is active. |
 | `status` | Show the timer, then the service. |
 | `journal` | Follow the service journal. |
-| `--version`, `-V` | Print `github-backup 1.4.8`. |
+| `--version`, `-V` | Print `github-backup 1.4.9`. |
 | `--help`, `-h` | Print every command, every option, and the examples. |
 
 ### `sync`
@@ -423,7 +423,7 @@ github-backup --help
 github-backup -h
 ```
 
-`--version` prints `github-backup 1.4.8`. Running `github-backup` with no
+`--version` prints `github-backup 1.4.9`. Running `github-backup` with no
 arguments prints the same text as `--help` and exits `0`. An unknown argument,
 or an option with no value, prints the error and then the same help, and
 exits `1`.
@@ -446,7 +446,7 @@ exits `1`.
 | `--force-fast-forward` | `sync`, `profile` | Reset eligible checkouts to the upstream commit and delete untracked files. |
 | `--log-file FILE` | `sync`, `profile`, `setup` | Log path for this run. On `setup`, also the path saved in the configuration file. Default: `/var/log/github-backup.log`. |
 | `--token TOKEN` | any command | GitHub token. With no `--profile`, `sync` downloads every repository that account owns. Put it in the conf file so later runs do not need it again. |
-| `--config FILE` | any command | Use `FILE` instead of `/etc/github-backup/github-backup.conf`. One option per line, including `--token`. On `setup`, the service runs `sync --config FILE`. |
+| `--config FILE` | any command | Use `FILE` instead of `/etc/github-backup/github-backup.conf`. One option per line, including `--token`. On `setup`, the service runs `sync --config FILE` only when `FILE` is not that standard path. |
 | `--schedule CALENDAR` | `setup` | systemd `OnCalendar` value. Default: `*-*-* 02:00:00`. |
 | `--no-systemd` | `setup` | Write the configuration and skip unit installation. |
 | `--force`, `-f` | `install`, `setup` | Overwrite an existing binary, completion file, or unit. On `setup`, also rewrite the configuration. |
@@ -462,7 +462,7 @@ A flag may appear before or after the command name:
 ```bash
 github-backup --dry-run --verbose sync --base-dir ~/src
 github-backup sync --base-dir ~/src --dry-run --verbose
-github-backup sync --config /etc/github-backup/github-backup.conf --dry-run
+github-backup sync --config /root/github-backup.conf --dry-run
 ```
 
 `--profile` and `--list-repos` are also accepted as the old option form, without
@@ -519,11 +519,12 @@ into the defaults file. `--notify-url` in the same file is the Formester
 endpoint. The comments at the top of the option file link
 to [Run report](#run-report). The token is not a field in the run report.
 
-The service runs `sync --config /etc/github-backup/github-backup.conf`.
-`setup --config FILE` points the service at `FILE` instead, so the timer uses
-that saved token. Pass `--config` again with `--force`, the same way you pass
-`--schedule` again. `setup --force` refreshes the comments in the installed
-option file and keeps uncommented lines.
+The service runs `sync`. That reads `/etc/github-backup/github-backup.conf`
+when the file is there, so the unit does not pass `--config`.
+`setup --config FILE` points the service at a different file, and the unit
+then runs `sync --config FILE`. Pass `--config` again with `--force`, the
+same way you pass `--schedule` again. `setup --force` refreshes the comments
+in the installed option file and keeps uncommented lines.
 
 ## Configuration
 
@@ -747,7 +748,7 @@ root when their directories are writable by you.
 | `/usr/local/bin/github-backup` | The command. |
 | `/etc/default/github-backup` | Base directory, profile, log, notify URL, and skip list. Mode `600`. |
 | `/etc/github-backup/github-backup.conf` | Backup and setup options, commented, with a short note and links to this README. Uncomment a line to set it. `--token` and `--notify-url` live here. Install options are not in this file. Mode `600`. |
-| `/etc/systemd/system/github-backup.service` | Oneshot service. `ExecStart` is `github-backup sync --config /etc/github-backup/github-backup.conf`, or `github-backup sync --config FILE` when setup was given `--config`. It runs as root. |
+| `/etc/systemd/system/github-backup.service` | Oneshot service. `ExecStart` is `github-backup sync`. It reads `/etc/github-backup/github-backup.conf` when that file exists. `setup --config FILE` uses `github-backup sync --config FILE` when `FILE` is a different path. It runs as root. |
 | `/etc/systemd/system/github-backup.timer` | Calendar timer for that service. |
 | `/var/log/github-backup.log` | Default log. `setup` creates it mode `640` when run as root. |
 | `$BASE_DIR/.github-backup.lock` | Lock for that base directory. A second run exits `1`. |
@@ -756,8 +757,9 @@ root when their directories are writable by you.
 `setup` writes these units. `ExecStart` uses the install path from the moment
 of setup, which is `/usr/local/bin/github-backup` unless
 `GITHUB_BACKUP_INSTALL_PATH` says otherwise. The line is
-`github-backup sync --config /etc/github-backup/github-backup.conf`, or
-`github-backup sync --config FILE` when setup was given `--config`.
+`github-backup sync`. The command reads
+`/etc/github-backup/github-backup.conf` when that file exists. The line is
+`github-backup sync --config FILE` when setup was given a different file.
 
 ```ini
 [Unit]
@@ -768,7 +770,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=-/etc/default/github-backup
-ExecStart=/usr/local/bin/github-backup sync --config /etc/github-backup/github-backup.conf
+ExecStart=/usr/local/bin/github-backup sync
 NoNewPrivileges=true
 PrivateTmp=true
 ```

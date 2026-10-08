@@ -385,7 +385,7 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         post = FormHandler.posts[0]
         self.assertEqual("application/json", post["accept"])
         self.assertTrue(post["content_type"].startswith("application/x-www-form-urlencoded"))
-        self.assertEqual("github-backup/1.4.8", post["user_agent"])
+        self.assertEqual("github-backup/1.4.9", post["user_agent"])
         self.assertEqual("github-backup", form_field("program"))
         self.assertEqual("ok", form_field("status"))
         self.assertIn("0 failed", form_field("summary"))
@@ -1016,6 +1016,23 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
         self.assertIn(
             f'ExecStart={env["GITHUB_BACKUP_INSTALL_PATH"]} sync --config {env["GITHUB_BACKUP_CONFIG"]}',
             service,
+        )
+
+    def test_service_omits_the_standard_option_file(self):
+        standard = run(
+            "bash",
+            "-c",
+            f'source "{SCRIPT}"; service_exec_start /usr/local/bin/github-backup /etc/github-backup/github-backup.conf',
+        )
+        custom = run(
+            "bash",
+            "-c",
+            f'source "{SCRIPT}"; service_exec_start /usr/local/bin/github-backup "/tmp/my backup.conf"',
+        )
+        self.assertEqual("/usr/local/bin/github-backup sync", standard.stdout.strip())
+        self.assertEqual(
+            '/usr/local/bin/github-backup sync --config "/tmp/my backup.conf"',
+            custom.stdout.strip(),
         )
 
     def test_setup_installs_commented_option_file(self):

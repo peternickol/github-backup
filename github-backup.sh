@@ -8,13 +8,14 @@
 
 set -euo pipefail
 
-VERSION="1.4.8"
+VERSION="1.4.9"
 PROGRAM="github-backup"
 INSTALL_PATH="${GITHUB_BACKUP_INSTALL_PATH:-/usr/local/bin/github-backup}"
 UPDATE_URL="${GITHUB_BACKUP_UPDATE_URL:-https://raw.githubusercontent.com/peternickol/github-backup/master/github-backup.sh}"
 SYSTEMD_DIR="${GITHUB_BACKUP_SYSTEMD_DIR:-/etc/systemd/system}"
 DEFAULTS_FILE="${GITHUB_BACKUP_DEFAULTS_FILE:-/etc/default/github-backup}"
-CONFIG_PATH="${GITHUB_BACKUP_CONFIG:-/etc/github-backup/github-backup.conf}"
+DEFAULT_CONFIG_PATH="/etc/github-backup/github-backup.conf"
+CONFIG_PATH="${GITHUB_BACKUP_CONFIG:-$DEFAULT_CONFIG_PATH}"
 API_URL="${GITHUB_BACKUP_API_URL:-https://api.github.com}"
 SYSTEMCTL_BIN="${GITHUB_BACKUP_SYSTEMCTL:-systemctl}"
 SERVICE_NAME="github-backup.service"
@@ -294,7 +295,7 @@ The backup command is: $PROGRAM sync
 Examples:
   github-backup
   github-backup sync --base-dir ~/src --dry-run --verbose
-  github-backup sync --config /etc/github-backup/github-backup.conf --dry-run
+  github-backup sync --config /root/github-backup.conf --dry-run
   github-backup sync --base-dir ~/src --skip repo-one --skip-list repo-two,repo-three
   github-backup sync --base-dir ~/src --force-fast-forward --dry-run
   github-backup profile octocat --base-dir /mnt/nas/github/octocat --dry-run
@@ -1704,6 +1705,16 @@ preserved_option_lines() {
     done < "$CONFIG_PATH"
 }
 
+service_exec_start() {
+    local install_path="$1"
+    local config_path="$2"
+    local line="$install_path sync"
+    if [[ "$config_path" != "$DEFAULT_CONFIG_PATH" ]]; then
+        line+=" --config $(format_config_word "$config_path")"
+    fi
+    printf '%s' "$line"
+}
+
 format_config_word() {
     local value="$1"
     if [[ "$value" =~ ^[A-Za-z0-9_@%+=:,./-]*$ ]]; then
@@ -1789,12 +1800,11 @@ write_systemd_units() {
         return 0
     fi
 
-    local exec_start="$INSTALL_PATH sync" config_word="" service_config="$CONFIG_PATH"
+    local exec_start="" service_config="$CONFIG_PATH"
     if [[ "$CONFIG_FROM_CLI" -eq 1 ]]; then
         service_config="$CONFIG_FILE"
     fi
-    config_word="$(format_config_word "$service_config")"
-    exec_start+=" --config $config_word"
+    exec_start="$(service_exec_start "$INSTALL_PATH" "$service_config")"
 
     service_tmp="$(mktemp "$SYSTEMD_DIR/.github-backup.service.XXXXXX")" || die "Could not stage service unit"
     timer_tmp="$(mktemp "$SYSTEMD_DIR/.github-backup.timer.XXXXXX")" || { rm -f "$service_tmp"; die "Could not stage timer unit"; }
