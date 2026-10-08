@@ -1,4 +1,10 @@
-# github-backup
+<p align="center">
+  <img src="docs/github-backup-logo.png" alt="github-backup logo: the GitHub mark beside a database with a sync arrow" width="160" height="136">
+</p>
+
+<h1 align="center">github-backup</h1>
+
+<p align="center"><strong>Keep local GitHub working trees current.</strong></p>
 
 `github-backup` keeps local GitHub working trees current. Point it at a
 directory and it fast-forwards clean branches that are behind GitHub. Give it
