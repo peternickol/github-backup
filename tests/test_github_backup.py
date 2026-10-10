@@ -1,4 +1,5 @@
 import contextlib
+import fcntl
 import http.server
 import json
 import os
@@ -20,6 +21,8 @@ def run(*args, cwd=None, env=None, check=True):
     merged_env.pop("GITHUB_BACKUP_NOTIFY_URL", None)
     merged_env.pop("GITHUB_BACKUP_TOKEN", None)
     merged_env.pop("GH_TOKEN", None)
+    merged_env.pop("GITHUB_BACKUP_LOCK_FILE", None)
+    merged_env["GITHUB_BACKUP_DEFAULTS_FILE"] = "/tmp/github-backup-test-no-defaults.conf"
     merged_env["GITHUB_BACKUP_CONFIG"] = "/tmp/github-backup-test-no-option-file.conf"
     merged_env.update(
         {
@@ -132,6 +135,47 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         self.assertEqual(original_head, self.fixture.client_head())
         self.assertEqual("local work\n", (self.fixture.client / "tracked.txt").read_text())
         self.assertTrue((self.fixture.client / "untracked.txt").exists())
+
+    def test_external_lock_keeps_base_directory_for_repositories_only(self):
+        lock = self.root / "state" / "sync.lock"
+        defaults = self.root / "defaults"
+        defaults.write_text(f'GITHUB_BACKUP_LOCK_FILE="{lock}"\n')
+        env = {"GITHUB_BACKUP_DEFAULTS_FILE": str(defaults)}
+
+        self.backup("--dry-run", env=env)
+
+        self.assertTrue(lock.is_file())
+        self.assertEqual(["sample"], sorted(p.name for p in self.fixture.client.parent.iterdir()))
+        self.fixture.publish("remote update\n")
+        original_head = self.fixture.client_head()
+        with lock.open("r+") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = self.backup(env=env, check=False)
+        self.assertEqual(1, result.returncode)
+        self.assertIn("Another github-backup is already running", result.stdout)
+        self.assertEqual(original_head, self.fixture.client_head())
+
+        self.backup(env=env)
+        self.assertEqual(self.fixture.remote_head(), self.fixture.client_head())
+
+    def test_external_lock_environment_overrides_defaults(self):
+        defaults = self.root / "defaults"
+        unused = self.root / "unused.lock"
+        selected = self.root / "selected.lock"
+        defaults.write_text(f'GITHUB_BACKUP_LOCK_FILE="{unused}"\n')
+        self.backup("--dry-run", env={
+            "GITHUB_BACKUP_DEFAULTS_FILE": str(defaults),
+            "GITHUB_BACKUP_LOCK_FILE": str(selected),
+        })
+        self.assertTrue(selected.exists())
+        self.assertFalse(unused.exists())
+        self.assertFalse((self.fixture.client.parent / ".github-backup.lock").exists())
+
+    def test_relative_external_lock_is_rejected_before_sync(self):
+        result = self.backup(env={"GITHUB_BACKUP_LOCK_FILE": "relative.lock"}, check=False)
+        self.assertEqual(1, result.returncode)
+        self.assertIn("must be an absolute path", result.stdout)
+        self.assertEqual(["sample"], sorted(p.name for p in self.fixture.client.parent.iterdir()))
 
     def test_staged_only_repository_is_skipped(self):
         original_head = self.fixture.client_head()
@@ -388,7 +432,7 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         post = FormHandler.posts[0]
         self.assertEqual("application/json", post["accept"])
         self.assertTrue(post["content_type"].startswith("application/x-www-form-urlencoded"))
-        self.assertEqual("github-backup/1.4.10", post["user_agent"])
+        self.assertEqual("github-backup/1.4.11", post["user_agent"])
         self.assertEqual("github-backup", form_field("program"))
         self.assertEqual("ok", form_field("status"))
         self.assertEqual(
@@ -1193,6 +1237,10 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
             "--token super-secret-token-value\n"
             "--base-dir /kept\n"
         )
+        defaults_path = pathlib.Path(env["GITHUB_BACKUP_DEFAULTS_FILE"])
+        lock_path = self.root / "state dir" / "sync.lock"
+        with defaults_path.open("a") as defaults_file:
+            defaults_file.write(f'GITHUB_BACKUP_LOCK_FILE="{lock_path}"\n')
 
         run(
             SCRIPT,
@@ -1214,6 +1262,7 @@ class GitHubBackupProfileAndInstallTests(unittest.TestCase):
         self.assertNotIn("old comment that should be refreshed", text)
         defaults = pathlib.Path(env["GITHUB_BACKUP_DEFAULTS_FILE"]).read_text()
         self.assertNotIn("super-secret-token-value", defaults)
+        self.assertIn(f'GITHUB_BACKUP_LOCK_FILE="{lock_path}"', defaults)
 
     def test_setup_saves_notify_url_from_the_environment(self):
         env = self.paths("notify-setup")

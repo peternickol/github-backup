@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.10"
+VERSION="1.4.11"
 PROGRAM="github-backup"
 INSTALL_PATH="${GITHUB_BACKUP_INSTALL_PATH:-/usr/local/bin/github-backup}"
 UPDATE_URL="${GITHUB_BACKUP_UPDATE_URL:-https://raw.githubusercontent.com/peternickol/github-backup/master/github-backup.sh}"
@@ -37,6 +37,7 @@ PURGE_CONFIG=0
 BASE_DIR=""
 PROFILE=""
 LOG_FILE=""
+LOCK_FILE=""
 NOTIFY_URL=""
 NOTIFY_ON_ERROR=0
 TOKEN=""
@@ -350,7 +351,7 @@ load_file_cfg() {
         key="$(trim "${line%%=*}")"
         value="$(unquote_value "${line#*=}")"
         case "$key" in
-            GITHUB_BACKUP_BASE_DIR|GITHUB_BACKUP_PROFILE|GITHUB_BACKUP_LOG_FILE|GITHUB_BACKUP_NOTIFY_URL|GITHUB_BACKUP_TOKEN|GITHUB_BACKUP_SKIP_LIST)
+            GITHUB_BACKUP_BASE_DIR|GITHUB_BACKUP_PROFILE|GITHUB_BACKUP_LOG_FILE|GITHUB_BACKUP_LOCK_FILE|GITHUB_BACKUP_NOTIFY_URL|GITHUB_BACKUP_TOKEN|GITHUB_BACKUP_SKIP_LIST)
                 FILE_CFG["$key"]="$value"
                 ;;
         esac
@@ -374,6 +375,7 @@ apply_config() {
     BASE_DIR="$(config_value GITHUB_BACKUP_BASE_DIR "$HOME/github-backup")"
     PROFILE="$(config_value GITHUB_BACKUP_PROFILE "")"
     LOG_FILE="$(config_value GITHUB_BACKUP_LOG_FILE "/var/log/github-backup.log")"
+    LOCK_FILE="$(config_value GITHUB_BACKUP_LOCK_FILE "")"
     NOTIFY_URL="$(config_value GITHUB_BACKUP_NOTIFY_URL "")"
     if [[ -n "${GITHUB_BACKUP_TOKEN+x}" ]]; then
         TOKEN="$GITHUB_BACKUP_TOKEN"
@@ -845,8 +847,12 @@ record_diffstat() {
 
 acquire_lock() {
     [[ "$LOCK_ACQUIRED" -eq 1 ]] && return 0
-    local lock="$BASE_DIR/.github-backup.lock"
+    local lock="${LOCK_FILE:-$BASE_DIR/.github-backup.lock}"
     have_cmd flock || die "flock is required (util-linux)."
+    if [[ -n "$LOCK_FILE" ]]; then
+        [[ "$LOCK_FILE" == /* ]] || die "GITHUB_BACKUP_LOCK_FILE must be an absolute path."
+        mkdir -p -- "$(dirname -- "$lock")" || die "Could not create lock directory."
+    fi
     exec 9>"$lock" || die "Could not create lock file: $lock"
     if ! flock -n 9; then
         die "Another github-backup is already running for $BASE_DIR."
@@ -1542,6 +1548,11 @@ write_defaults_file() {
         write_env_assignment GITHUB_BACKUP_BASE_DIR "$BASE_DIR"
         write_env_assignment GITHUB_BACKUP_PROFILE "$PROFILE"
         write_env_assignment GITHUB_BACKUP_LOG_FILE "$LOG_FILE"
+        if [[ -n "$LOCK_FILE" ]]; then
+            write_env_assignment GITHUB_BACKUP_LOCK_FILE "$LOCK_FILE"
+        else
+            printf '%s\n' '# GITHUB_BACKUP_LOCK_FILE=/var/lib/github-backup/sync.lock'
+        fi
         if [[ -n "$NOTIFY_URL" ]]; then
             write_env_assignment GITHUB_BACKUP_NOTIFY_URL "$NOTIFY_URL"
         else

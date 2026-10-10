@@ -119,7 +119,7 @@ issues, releases, and Git LFS objects are not downloaded.
 | `is-active` | Report whether the timer is active. |
 | `status` | Show the timer, then the service. |
 | `journal` | Follow the service journal. |
-| `--version`, `-V` | Print `github-backup 1.4.10`. |
+| `--version`, `-V` | Print `github-backup 1.4.11`. |
 | `--help`, `-h` | Print every command, every option, and the examples. |
 
 ### `sync`
@@ -170,9 +170,17 @@ Skipping frostonix-portal: 5 commits ahead of origin/master
 dish: would fast-forward 2 commits to origin/master
 ```
 
-`sync` takes `$BASE_DIR/.github-backup.lock`, including `--dry-run`. A second
+`sync` takes `$BASE_DIR/.github-backup.lock` by default, including `--dry-run`. A second
 run for the same directory exits `1` with `Another github-backup is already
 running`. The lock is released when the process exits.
+
+To keep the base directory for repositories only, set
+`GITHUB_BACKUP_LOCK_FILE=/var/lib/github-backup/sync.lock` in
+`/etc/default/github-backup`. Use an absolute path outside the checkout; its
+parent directory is created when needed. Manual runs and the timer read the
+same setting. Configure every invocation that touches the same base directory
+to use the same lock path. Stop any active backup before changing that path.
+Reusing one lock for several base directories serializes their runs.
 
 The systemd service runs `github-backup sync` and reads the option file. A
 token there makes that run download the account that owns the token.
@@ -468,7 +476,7 @@ github-backup --help
 github-backup -h
 ```
 
-`--version` prints `github-backup 1.4.10`. Running `github-backup` with no
+`--version` prints `github-backup 1.4.11`. Running `github-backup` with no
 arguments prints the same text as `--help` and exits `0`. An unknown argument,
 or an option with no value, prints the error and then the same help, and
 exits `1`.
@@ -612,6 +620,7 @@ GITHUB_BACKUP_SKIP_LIST=repo-one,repo-two
 | `GITHUB_BACKUP_BASE_DIR` | Crawl root and profile clone destination. |
 | `GITHUB_BACKUP_PROFILE` | User or organization to discover. When this is set, `sync` uses it instead of the account that owns the token. |
 | `GITHUB_BACKUP_LOG_FILE` | Log file. Each line is `YYYY-MM-DD HH:MM:SS [LEVEL] message`. |
+| `GITHUB_BACKUP_LOCK_FILE` | Optional absolute lock path outside the base directory. Empty or unset uses `$BASE_DIR/.github-backup.lock`. All runs for the same base must use the same path. `setup --force` preserves this setting. |
 | `GITHUB_BACKUP_NOTIFY_URL` | Form endpoint used when `--notify-url` is not set. Prefer `--notify-url` in the option file. |
 | `GITHUB_BACKUP_TOKEN` | GitHub token. Prefer `--token` in the option file. This line stays commented. |
 | `GITHUB_BACKUP_SKIP_LIST` | Comma-separated repository names to skip. |
@@ -805,7 +814,7 @@ root when their directories are writable by you.
 | `/etc/systemd/system/github-backup.service` | Oneshot service. `ExecStart` is `github-backup sync`. It reads `/etc/github-backup/github-backup.conf` when that file exists. `setup --config FILE` uses `github-backup sync --config FILE` when `FILE` is a different path. It runs as root. |
 | `/etc/systemd/system/github-backup.timer` | Calendar timer for that service. |
 | `/var/log/github-backup.log` | Default log. `setup` creates it mode `640` when run as root. |
-| `$BASE_DIR/.github-backup.lock` | Lock for that base directory. A second run exits `1`. |
+| `GITHUB_BACKUP_LOCK_FILE`, or `$BASE_DIR/.github-backup.lock` by default | Exclusive run lock. A second run using the same lock exits `1`. |
 | Bash completion file | Command and option completion for `github-backup`. Mode `644`. |
 
 `setup` writes these units. `ExecStart` uses the install path from the moment
