@@ -119,7 +119,7 @@ issues, releases, and Git LFS objects are not downloaded.
 | `is-active` | Report whether the timer is active. |
 | `status` | Show the timer, then the service. |
 | `journal` | Follow the service journal. |
-| `--version`, `-V` | Print `github-backup 1.4.11`. |
+| `--version`, `-V` | Print `github-backup 1.4.12`. |
 | `--help`, `-h` | Print every command, every option, and the examples. |
 
 ### `sync`
@@ -476,7 +476,7 @@ github-backup --help
 github-backup -h
 ```
 
-`--version` prints `github-backup 1.4.11`. Running `github-backup` with no
+`--version` prints `github-backup 1.4.12`. Running `github-backup` with no
 arguments prints the same text as `--help` and exits `0`. An unknown argument,
 or an option with no value, prints the error and then the same help, and
 exits `1`.

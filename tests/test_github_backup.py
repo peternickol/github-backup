@@ -432,7 +432,7 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         post = FormHandler.posts[0]
         self.assertEqual("application/json", post["accept"])
         self.assertTrue(post["content_type"].startswith("application/x-www-form-urlencoded"))
-        self.assertEqual("github-backup/1.4.11", post["user_agent"])
+        self.assertEqual("github-backup/1.4.12", post["user_agent"])
         self.assertEqual("github-backup", form_field("program"))
         self.assertEqual("ok", form_field("status"))
         self.assertEqual(
@@ -649,6 +649,32 @@ class GitHubBackupSafetyTests(unittest.TestCase):
         self.assertFalse(marker.exists())
         self.assertEqual(1, len(FormHandler.posts))
         self.assertNotIn("mail nor sendmail", result.stdout)
+
+    def test_sync_runs_when_home_is_unset(self):
+        env = os.environ.copy()
+        for key in (
+            "HOME",
+            "GITHUB_BACKUP_NOTIFY_URL",
+            "GITHUB_BACKUP_TOKEN",
+            "GH_TOKEN",
+            "GITHUB_BACKUP_LOCK_FILE",
+        ):
+            env.pop(key, None)
+        env["GITHUB_BACKUP_DEFAULTS_FILE"] = "/tmp/github-backup-test-no-defaults.conf"
+        env["GITHUB_BACKUP_CONFIG"] = "/tmp/github-backup-test-no-option-file.conf"
+        env["GITHUB_BACKUP_BASE_DIR"] = str(self.fixture.client.parent)
+        env["GITHUB_BACKUP_LOG_FILE"] = str(self.log)
+        result = subprocess.run(
+            [str(SCRIPT), "sync", "--dry-run"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertNotIn("unbound variable", result.stdout)
+        self.assertIn("Summary:", result.stdout)
 
 
 class FakeGitHubHandler(http.server.BaseHTTPRequestHandler):

@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.11"
+VERSION="1.4.12"
 PROGRAM="github-backup"
 INSTALL_PATH="${GITHUB_BACKUP_INSTALL_PATH:-/usr/local/bin/github-backup}"
 UPDATE_URL="${GITHUB_BACKUP_UPDATE_URL:-https://raw.githubusercontent.com/peternickol/github-backup/master/github-backup.sh}"
@@ -372,7 +372,13 @@ config_value() {
 
 apply_config() {
     load_file_cfg
-    BASE_DIR="$(config_value GITHUB_BACKUP_BASE_DIR "$HOME/github-backup")"
+    # A systemd system service does not set HOME. Build the fallback only
+    # when HOME is set, so a configured base directory still loads.
+    local default_base="/var/lib/github-backup"
+    if [[ -n "${HOME:-}" ]]; then
+        default_base="$HOME/github-backup"
+    fi
+    BASE_DIR="$(config_value GITHUB_BACKUP_BASE_DIR "$default_base")"
     PROFILE="$(config_value GITHUB_BACKUP_PROFILE "")"
     LOG_FILE="$(config_value GITHUB_BACKUP_LOG_FILE "/var/log/github-backup.log")"
     LOCK_FILE="$(config_value GITHUB_BACKUP_LOCK_FILE "")"
